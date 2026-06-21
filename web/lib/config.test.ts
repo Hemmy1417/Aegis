@@ -1,0 +1,48 @@
+import { describe, it, expect, afterEach, vi } from "vitest";
+import { STATUS_META, OUTCOME_LABEL, explorerTxUrl } from "./config";
+
+// Every status the contract can emit must have a UI label/tone, or a deal renders blank.
+const CONTRACT_STATUSES = [
+  "OPEN", "CREATED", "DELIVERED", "DISPUTED", "RULED", "NEEDS_REVIEW", "SETTLED", "CANCELLED",
+];
+const CONTRACT_OUTCOMES = ["RELEASE", "REFUND", "SPLIT", "UNCLEAR"];
+
+describe("status + outcome maps", () => {
+  it("covers every contract deal status", () => {
+    for (const s of CONTRACT_STATUSES) {
+      expect(STATUS_META[s]).toBeDefined();
+      expect(STATUS_META[s].label.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("uses only known tones", () => {
+    const tones = new Set(["neutral", "active", "warn", "good", "bad"]);
+    for (const s of CONTRACT_STATUSES) expect(tones.has(STATUS_META[s].tone)).toBe(true);
+  });
+
+  it("covers every ruling outcome", () => {
+    for (const o of CONTRACT_OUTCOMES) expect(OUTCOME_LABEL[o]).toBeTruthy();
+  });
+});
+
+describe("explorerTxUrl", () => {
+  const hash = "0xabc123";
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("defaults to the GenLayer Studio Explorer", () => {
+    expect(explorerTxUrl(hash)).toBe("https://explorer-studio.genlayer.com/tx/0xabc123");
+  });
+
+  it("returns '' for an empty hash", () => {
+    expect(explorerTxUrl("")).toBe("");
+  });
+
+  it("honors an env override and strips a trailing slash", async () => {
+    vi.stubEnv("NEXT_PUBLIC_EXPLORER_URL", "https://ex.example/");
+    const { explorerTxUrl: fn } = await import("./config");
+    expect(fn(hash)).toBe("https://ex.example/tx/0xabc123");
+  });
+});

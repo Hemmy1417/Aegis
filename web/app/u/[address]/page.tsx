@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { getAddress } from "viem";
 import { StatusBadge } from "@/components/StatusBadge";
 import { getReputation, getDealsByAddress, genFromWei, type Reputation, type Deal } from "@/lib/aegis";
 
@@ -19,7 +20,15 @@ const TIER_TONE: Record<string, string> = {
 
 export default function ProfilePage() {
   const params = useParams<{ address: string }>();
-  const address = params.address;
+  // Reputation/deals are keyed by the EIP-55 checksummed address on-chain; normalize a
+  // shared/typed link (which may be lowercase) so it matches, like Credence learned.
+  const address = useMemo(() => {
+    try {
+      return getAddress(params.address);
+    } catch {
+      return params.address;
+    }
+  }, [params.address]);
   const [rep, setRep] = useState<Reputation | null>(null);
   const [deals, setDeals] = useState<Deal[]>([]);
   const [loading, setLoading] = useState(true);
@@ -30,6 +39,7 @@ export default function ProfilePage() {
         setRep(r);
         setDeals(d.sort((a, b) => b.created_seq - a.created_seq));
       })
+      .catch(() => {})
       .finally(() => setLoading(false));
   }, [address]);
 
