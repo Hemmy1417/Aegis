@@ -9,7 +9,7 @@ on-chain — including a real dispute that the AI split 50/50 and settled. The N
 complete. Next: GitHub + Vercel deploy.
 
 ## Live demo
-_TODO: Vercel link._
+**https://aegis-safu.vercel.app** — live on Vercel, reading the contract on Studionet.
 
 ## Contract details
 | Field | Value |
