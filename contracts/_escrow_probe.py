@@ -33,13 +33,9 @@ class EscrowProbe(gl.Contract):
         to = self.last_depositor
         amount = self.last_amount
         self.last_amount = u256(0)
-        # ⚠️ VERIFY-IN-STUDIO — exact send symbol. Best guess first; if Studio errors with
-        # "has no attribute 'emit_transfer'" or similar, the message names the right API and
-        # we fix this one line. Candidates to try in order:
-        #   gl.message.emit_transfer(to, amount)
-        #   emit_transfer(to, amount)
-        #   gl.emit_transfer(to, amount)
-        gl.message.emit_transfer(to, amount)
+        # Confirmed API (GenLayer "Value Transfers" docs): wrap the string address with
+        # Address(...), get a contract handle via gl.get_contract_at(...), then emit_transfer.
+        gl.get_contract_at(Address(to)).emit_transfer(value=amount, on="finalized")
         return json.dumps({"refunded_to": to, "amount": str(amount)})
 
     @gl.public.view
