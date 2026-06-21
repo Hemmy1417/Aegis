@@ -1,11 +1,15 @@
 # v0.1.0
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 
-# Aegis — AI-arbitrated freelance escrow (Phase 1 MVP).
-# Client funds a job in escrow; on a dispute, both parties submit written cases and an
-# AI-validator panel rules how the escrowed GEN is split. The contract holds the funds
-# and settles them deterministically by the ruling. (Deliverable-fetch, appeal, and the
-# richer confidence gate land in Phase 2.)
+# Aegis — AI-arbitrated freelance escrow (Phase 2).
+# Client funds a job in escrow; on a dispute, both parties submit cases and an AI-validator
+# panel rules how the escrowed GEN is split. The contract holds the funds and settles them
+# deterministically by the ruling.
+#
+# Phase 2 adds: (1) appeal — resolve() rules WITHOUT paying, the losing side may appeal once
+# for a more rigorous re-arbitration, then finalize() pays out; (2) the arbitrator can fetch
+# the freelancer's deliverable URL and weigh the actual work; (3) fairness-based reputation
+# (dispute wins/losses), plus a confidence gate (UNCLEAR/LOW -> NEEDS_REVIEW, funds held).
 
 from genlayer import *
 import json
@@ -13,11 +17,17 @@ import json
 MAX_TERMS = 4000
 MAX_CASE = 4000
 
-# Deal lifecycle:
-#   CREATED -> DELIVERED -> SETTLED            (happy path: client approves)
-#   CREATED/DELIVERED -> DISPUTED -> SETTLED   (AI rules RELEASE/REFUND/SPLIT)
-#                                  -> NEEDS_REVIEW (AI ruling UNCLEAR/low-confidence; funds held)
-#   CREATED/DELIVERED -> CANCELLED             (both parties cancel -> refund client)
+# Lifecycle:
+#   CREATED -> DELIVERED -> SETTLED                       (client approves)
+#   ... -> DISPUTED -> (resolve) -> RULED -> (finalize) -> SETTLED
+#                                -> NEEDS_REVIEW          (UNCLEAR/low confidence; held)
+#   RULED/NEEDS_REVIEW -> (appeal, once) -> RULED/NEEDS_REVIEW
+#   CREATED/DELIVERED/DISPUTED/NEEDS_REVIEW -> CANCELLED  (both parties cancel -> refund client)
+
+_PRINCIPLE = (
+    "Outputs are equivalent if they agree on the outcome value and the freelancer_pct agrees "
+    "within 10 (same nearest-10 bucket), even if the reasons are worded differently."
+)
 
 
 # ------------------------------------------------------------------- helpers (deterministic)
@@ -37,11 +47,56 @@ def _parse_json(raw: str):
 def _rep_tier(score: int) -> str:
     if score <= 0:
         return "New"
-    if score < 50:
+    if score < 40:
         return "Building"
-    if score < 100:
+    if score < 80:
         return "Reliable"
     return "Highly Reliable"
+
+
+def _arb_prompt(terms: str, client_case: str, freelancer_case: str, deliverable: str, appeal: bool) -> str:
+    appeal_note = ""
+    if appeal:
+        appeal_note = (
+            "\nThis is an APPEAL of a prior ruling. Re-examine all evidence especially rigorously "
+            "and judge independently; do not simply defer to the earlier decision.\n"
+        )
+    deliverable_section = ""
+    if deliverable:
+        deliverable_section = (
+            "\nFetched deliverable (the freelancer's submitted work, may be truncated):\n"
+            "\"\"\"\n" + deliverable + "\n\"\"\"\n"
+        )
+    return f"""You are an impartial arbitrator resolving a freelance escrow dispute.{appeal_note}
+Decide how the escrowed payment should be split between the client and the freelancer, based ONLY
+on the agreed terms, each party's statement, and the fetched deliverable if present.
+
+Agreed terms:
+\"\"\"
+{terms}
+\"\"\"
+
+Client's statement:
+\"\"\"
+{client_case}
+\"\"\"
+
+Freelancer's statement:
+\"\"\"
+{freelancer_case}
+\"\"\"
+{deliverable_section}
+Rules:
+- Return VALID JSON ONLY, no prose outside the object. Do not invent facts.
+- outcome is one of: "RELEASE" (work meets the terms -> pay freelancer in full),
+  "REFUND" (work clearly fails the terms -> refund client), "SPLIT" (both have partial merit),
+  "UNCLEAR" (the evidence is insufficient to judge fairly).
+- freelancer_pct is an integer 0-100 = the freelancer's share. RELEASE => 100, REFUND => 0,
+  SPLIT => strictly between, UNCLEAR => 0.
+- confidence is one of: "LOW", "MEDIUM", "HIGH".
+
+Respond ONLY with:
+{{"outcome":"...","freelancer_pct":0,"reasons":["..."],"risk_flags":[],"confidence":"LOW"}}"""
 
 
 # ----------------------------------------------------------------------------------- contract
@@ -83,17 +138,21 @@ class Aegis(gl.Contract):
         if amount > 0:
             gl.get_contract_at(Address(address)).emit_transfer(value=u256(amount), on="finalized")
 
-    def _bump_rep(self, address: str) -> None:
-        rep = json.loads(self.reputation.get(address, "")) if self.reputation.get(address, "") else {
-            "address": address, "deals": 0, "completed": 0, "score": 0, "tier": "New"
-        }
-        rep["completed"] = int(rep.get("completed", 0)) + 1
-        rep["deals"] = int(rep.get("deals", 0)) + 1
-        rep["score"] = min(100, rep["completed"] * 25)
-        rep["tier"] = _rep_tier(rep["score"])
-        self.reputation[address] = json.dumps(rep)
+    def _rep_get(self, address: str):
+        raw = self.reputation.get(address, "")
+        if raw:
+            return json.loads(raw)
+        return {"address": address, "completed": 0, "dispute_wins": 0, "dispute_losses": 0,
+                "score": 0, "tier": "New"}
 
-    def _settle(self, deal: dict, ruling: dict) -> None:
+    def _rep_save(self, rep: dict) -> None:
+        score = rep["completed"] * 20 + rep["dispute_wins"] * 15 - rep["dispute_losses"] * 10
+        score = max(0, min(100, score))
+        rep["score"] = score
+        rep["tier"] = _rep_tier(score)
+        self.reputation[rep["address"]] = json.dumps(rep)
+
+    def _settle(self, deal: dict, ruling: dict, disputed: bool) -> None:
         amount = int(deal["amount"])
         pct = int(ruling.get("freelancer_pct", 0))
         if pct < 0:
@@ -104,13 +163,43 @@ class Aegis(gl.Contract):
         client_share = amount - freelancer_share
         self._pay(deal["freelancer"], freelancer_share)
         self._pay(deal["client"], client_share)
+
         deal["ruling"] = ruling
         deal["status"] = "SETTLED"
         self._save(deal)
         self.settled_index[str(int(self.total_settled))] = deal["id"]
         self.total_settled = u256(int(self.total_settled) + 1)
-        self._bump_rep(deal["client"])
-        self._bump_rep(deal["freelancer"])
+
+        client = self._rep_get(deal["client"])
+        freelancer = self._rep_get(deal["freelancer"])
+        client["completed"] += 1
+        freelancer["completed"] += 1
+        if disputed:
+            if pct >= 50:
+                freelancer["dispute_wins"] += 1
+                client["dispute_losses"] += 1
+            else:
+                client["dispute_wins"] += 1
+                freelancer["dispute_losses"] += 1
+        self._rep_save(client)
+        self._rep_save(freelancer)
+
+    def _apply_ruling(self, deal: dict, ruling: dict) -> None:
+        # Store a fresh ruling and set RULED vs NEEDS_REVIEW (confidence gate). No payout here.
+        for key, default in (("reasons", []), ("risk_flags", []), ("freelancer_pct", 0), ("confidence", "LOW")):
+            if key not in ruling:
+                ruling[key] = default
+        outcome = ruling.get("outcome", "UNCLEAR")
+        if outcome == "RELEASE":
+            ruling["freelancer_pct"] = 100
+        elif outcome == "REFUND":
+            ruling["freelancer_pct"] = 0
+        deal["ruling"] = ruling
+        if outcome == "UNCLEAR" or ruling.get("confidence") == "LOW":
+            deal["status"] = "NEEDS_REVIEW"
+        else:
+            deal["status"] = "RULED"
+        self._save(deal)
 
     # ----------------------------------------------------------------------------- writes
     @gl.public.write.payable
@@ -130,18 +219,10 @@ class Aegis(gl.Contract):
         seq = int(self.total_deals)
         deal_id = f"d-{seq}"
         deal = {
-            "id": deal_id,
-            "client": client,
-            "freelancer": fr,
-            "amount": str(amount),
-            "terms": t,
-            "deliverable_uri": "",
-            "status": "CREATED",
-            "client_case": "",
-            "freelancer_case": "",
-            "ruling": None,
-            "appealed": False,
-            "created_seq": seq,
+            "id": deal_id, "client": client, "freelancer": fr, "amount": str(amount),
+            "terms": t, "deliverable_uri": "", "status": "CREATED",
+            "client_case": "", "freelancer_case": "", "ruling": None,
+            "appealed": False, "cancel_flags": [], "created_seq": seq,
         }
         self._save(deal)
         self._index(client, deal_id)
@@ -170,14 +251,9 @@ class Aegis(gl.Contract):
             raise gl.vm.UserError("only the client may approve")
         if deal["status"] not in ("CREATED", "DELIVERED"):
             raise gl.vm.UserError("deal cannot be approved in its current state")
-        ruling = {
-            "outcome": "RELEASE",
-            "freelancer_pct": 100,
-            "reasons": ["Client approved the work."],
-            "risk_flags": [],
-            "confidence": "HIGH",
-        }
-        self._settle(deal, ruling)
+        ruling = {"outcome": "RELEASE", "freelancer_pct": 100,
+                  "reasons": ["Client approved the work."], "risk_flags": [], "confidence": "HIGH"}
+        self._settle(deal, ruling, False)
         return json.dumps(deal)
 
     @gl.public.write
@@ -218,67 +294,57 @@ class Aegis(gl.Contract):
             raise gl.vm.UserError("deal is not in dispute")
         if not deal["client_case"] or not deal["freelancer_case"]:
             raise gl.vm.UserError("both parties must submit their case before resolving")
-
         terms = deal["terms"]
-        client_case = deal["client_case"]
-        freelancer_case = deal["freelancer_case"]
+        cc = deal["client_case"]
+        fc = deal["freelancer_case"]
+        uri = deal["deliverable_uri"]
 
         def judge() -> str:
-            prompt = f"""You are an impartial arbitrator resolving a freelance escrow dispute.
-Decide how the escrowed payment should be split between the client and the freelancer,
-based ONLY on the agreed terms and each party's statement below.
+            deliverable = ""
+            if uri.startswith("http"):
+                deliverable = gl.nondet.web.render(uri, mode="text")[:6000]
+            return gl.nondet.exec_prompt(_arb_prompt(terms, cc, fc, deliverable, False))
 
-Agreed terms:
-\"\"\"
-{terms}
-\"\"\"
+        ruling = _parse_json(gl.eq_principle.prompt_comparative(judge, _PRINCIPLE))
+        self._apply_ruling(deal, ruling)
+        return json.dumps(deal)
 
-Client's statement:
-\"\"\"
-{client_case}
-\"\"\"
+    @gl.public.write
+    def appeal(self, deal_id: str) -> str:
+        deal = self._get(deal_id)
+        sender = str(gl.message.sender_address)
+        if sender.lower() not in (deal["client"].lower(), deal["freelancer"].lower()):
+            raise gl.vm.UserError("only a party to the deal may appeal")
+        if deal["status"] not in ("RULED", "NEEDS_REVIEW"):
+            raise gl.vm.UserError("only a ruled (not yet finalized) deal can be appealed")
+        if deal["appealed"]:
+            raise gl.vm.UserError("this deal has already been appealed once")
+        terms = deal["terms"]
+        cc = deal["client_case"]
+        fc = deal["freelancer_case"]
+        uri = deal["deliverable_uri"]
 
-Freelancer's statement:
-\"\"\"
-{freelancer_case}
-\"\"\"
+        def judge() -> str:
+            deliverable = ""
+            if uri.startswith("http"):
+                deliverable = gl.nondet.web.render(uri, mode="text")[:6000]
+            return gl.nondet.exec_prompt(_arb_prompt(terms, cc, fc, deliverable, True))
 
-Rules:
-- Return VALID JSON ONLY, no prose outside the object. Do not invent facts.
-- outcome is one of: "RELEASE" (work meets the terms -> pay freelancer in full),
-  "REFUND" (work clearly fails the terms -> refund client), "SPLIT" (both have partial merit),
-  "UNCLEAR" (the statements are insufficient to judge fairly).
-- freelancer_pct is an integer 0-100 = the share of the escrow the freelancer should receive.
-  RELEASE => 100, REFUND => 0, SPLIT => a value strictly between, UNCLEAR => 0.
-- confidence is one of: "LOW", "MEDIUM", "HIGH".
+        ruling = _parse_json(gl.eq_principle.prompt_comparative(judge, _PRINCIPLE))
+        deal["appealed"] = True
+        self._apply_ruling(deal, ruling)
+        return json.dumps(deal)
 
-Respond ONLY with:
-{{"outcome":"...","freelancer_pct":0,"reasons":["..."],"risk_flags":[],"confidence":"LOW"}}"""
-            return gl.nondet.exec_prompt(prompt)
-
-        principle = (
-            "Outputs are equivalent if they agree on the outcome value and the freelancer_pct "
-            "agrees within 10 (same nearest-10 bucket), even if reasons are worded differently."
-        )
-        ruling_raw = gl.eq_principle.prompt_comparative(judge, principle)
-        ruling = _parse_json(ruling_raw)
-        for key, default in (("reasons", []), ("risk_flags", []), ("freelancer_pct", 0), ("confidence", "LOW")):
-            if key not in ruling:
-                ruling[key] = default
-
-        outcome = ruling.get("outcome", "UNCLEAR")
-        # Confidence gate (basic): hold the escrow instead of a bad payout.
-        if outcome == "UNCLEAR" or ruling.get("confidence") == "LOW":
-            deal["ruling"] = ruling
-            deal["status"] = "NEEDS_REVIEW"
-            self._save(deal)
-            return json.dumps(deal)
-
-        if outcome == "RELEASE":
-            ruling["freelancer_pct"] = 100
-        elif outcome == "REFUND":
-            ruling["freelancer_pct"] = 0
-        self._settle(deal, ruling)
+    @gl.public.write
+    def finalize(self, deal_id: str) -> str:
+        # Pay out a ruled deal. Anyone can call (so the winner can claim once the appeal window
+        # has passed — i.e. after an appeal, or if the losing side declines to appeal).
+        deal = self._get(deal_id)
+        if deal["status"] != "RULED":
+            raise gl.vm.UserError("deal is not in a finalizable (RULED) state")
+        if not deal.get("ruling"):
+            raise gl.vm.UserError("no ruling to finalize")
+        self._settle(deal, deal["ruling"], True)
         return json.dumps(deal)
 
     @gl.public.write
@@ -288,7 +354,7 @@ Respond ONLY with:
         sender = str(gl.message.sender_address)
         if sender.lower() not in (deal["client"].lower(), deal["freelancer"].lower()):
             raise gl.vm.UserError("only a party to the deal may cancel")
-        if deal["status"] not in ("CREATED", "DELIVERED", "DISPUTED"):
+        if deal["status"] not in ("CREATED", "DELIVERED", "DISPUTED", "NEEDS_REVIEW"):
             raise gl.vm.UserError("deal cannot be cancelled in its current state")
         flags = deal.get("cancel_flags", [])
         if sender.lower() not in flags:
@@ -324,10 +390,7 @@ Respond ONLY with:
 
     @gl.public.view
     def get_reputation(self, address: str) -> str:
-        raw = self.reputation.get(address, "")
-        if raw:
-            return raw
-        return json.dumps({"address": address, "deals": 0, "completed": 0, "score": 0, "tier": "New"})
+        return json.dumps(self._rep_get(address))
 
     @gl.public.view
     def get_stats(self) -> str:
@@ -341,9 +404,8 @@ Respond ONLY with:
     def get_latest(self, n: int) -> str:
         out = []
         total = int(self.total_settled)
-        start = total - 1
+        i = total - 1
         stop = max(-1, total - 1 - n)
-        i = start
         while i > stop:
             did = self.settled_index.get(str(i), "")
             if did:
