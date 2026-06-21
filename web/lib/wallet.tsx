@@ -1,43 +1,45 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { createClient } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
 import { getAddress } from "viem";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Client = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Eip1193 = any;
+
+export type WalletInfo = { uuid: string; name: string; icon: string; rdns: string };
+export type Discovered = { info: WalletInfo; provider: Eip1193 };
 
 type WalletState = {
   address: string;
   client: Client | null;
   connecting: boolean;
-  hasWallet: boolean; // an injected EIP-1193 wallet is present
+  wallets: Discovered[]; // injected wallets discovered via EIP-6963 (+ legacy fallback)
+  hasWallet: boolean;
   chainName: string;
-  gasSponsored: boolean; // Studionet covers gas; users still need GEN to fund escrow
+  gasSponsored: boolean;
   balanceWei: bigint | null;
   refreshBalance: () => Promise<void>;
-  connect: () => Promise<void>;
+  connect: (w?: Discovered) => Promise<void>;
   disconnect: () => void;
 };
 
 const Ctx = createContext<WalletState | null>(null);
-const CONNECTED_KEY = "aegis_connected";
+const CONNECTED_KEY = "aegis_connected_rdns";
 const STUDIONET_HEX = "0xF22F"; // 61999
 const CHAIN_NAME = "Studionet";
 const GAS_SPONSORED = true;
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function eth(): any {
-  return typeof window !== "undefined" ? (window as { ethereum?: unknown }).ethereum : undefined;
-}
 
 export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [address, setAddress] = useState("");
   const [client, setClient] = useState<Client | null>(null);
   const [connecting, setConnecting] = useState(false);
-  const [hasWallet, setHasWallet] = useState(false);
+  const [wallets, setWallets] = useState<Discovered[]>([]);
   const [balanceWei, setBalanceWei] = useState<bigint | null>(null);
+  const providerRef = useRef<Eip1193 | null>(null);
 
   const refreshBalance = useCallback(async () => {
     if (!client || !address) {
@@ -56,72 +58,109 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     refreshBalance();
   }, [refreshBalance]);
 
-  const bind = useCallback((raw: string) => {
-    // Injected wallets often return a lowercase address; the contract keys state by the
-    // EIP-55 checksummed address — normalize so read-backs (deals, reputation) match.
-    const addr = getAddress(raw);
-    setClient(createClient({ chain: studionet, account: addr }));
-    setAddress(addr);
-  }, []);
-
-  const connect = useCallback(async () => {
-    const provider = eth();
-    if (!provider) throw new Error("No wallet detected. Install MetaMask or Rabby, then try again.");
-    setConnecting(true);
-    try {
-      const accounts: string[] = await provider.request({ method: "eth_requestAccounts" });
-      const raw = accounts?.[0];
-      if (!raw) throw new Error("No account selected.");
-      try {
-        await provider.request({
-          method: "wallet_addEthereumChain",
-          params: [
-            {
-              chainId: STUDIONET_HEX,
-              chainName: "GenLayer Studionet",
-              rpcUrls: ["https://studio.genlayer.com/api"],
-              nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
-            },
-          ],
-        });
-      } catch {
-        /* declined or already added — continue */
-      }
-      bind(raw);
-      localStorage.setItem(CONNECTED_KEY, "1");
-    } finally {
-      setConnecting(false);
-    }
-  }, [bind]);
-
   const disconnect = useCallback(() => {
     setAddress("");
     setClient(null);
     setBalanceWei(null);
+    providerRef.current = null;
     localStorage.removeItem(CONNECTED_KEY);
   }, []);
 
+  // Injected wallets sign through their own EIP-1193 provider; pass it to genlayer-js
+  // so the wallet the user actually picked is what signs (not just window.ethereum).
+  const bind = useCallback(
+    (raw: string, provider: Eip1193) => {
+      const addr = getAddress(raw);
+      providerRef.current = provider;
+      setClient(createClient({ chain: studionet, account: addr, provider }));
+      setAddress(addr);
+      const onAccounts = (accs: string[]) => {
+        if (accs?.[0]) {
+          const a = getAddress(accs[0]);
+          setAddress(a);
+          setClient(createClient({ chain: studionet, account: a, provider }));
+        } else {
+          disconnect();
+        }
+      };
+      provider.removeListener?.("accountsChanged", onAccounts);
+      provider.on?.("accountsChanged", onAccounts);
+    },
+    [disconnect],
+  );
+
+  // EIP-6963 discovery (+ legacy window.ethereum fallback).
   useEffect(() => {
-    const provider = eth();
-    setHasWallet(!!provider);
-    if (!provider) return;
-    // Silent eager-reconnect if previously connected (no popup).
-    if (localStorage.getItem(CONNECTED_KEY) === "1") {
-      provider
-        .request({ method: "eth_accounts" })
-        .then((accs: string[]) => {
-          if (accs?.[0]) bind(accs[0]);
-        })
-        .catch(() => {});
+    function onAnnounce(e: Event) {
+      const d = (e as CustomEvent).detail as Discovered;
+      if (!d?.info?.uuid) return;
+      setWallets((prev) => (prev.some((p) => p.info.uuid === d.info.uuid) ? prev : [...prev, d]));
     }
-    // React to account / chain changes from the wallet.
-    const onAccounts = (accs: string[]) => {
-      if (accs?.[0]) bind(accs[0]);
-      else disconnect();
+    window.addEventListener("eip6963:announceProvider", onAnnounce as EventListener);
+    window.dispatchEvent(new Event("eip6963:requestProvider"));
+    const t = setTimeout(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const legacy = (window as any).ethereum;
+      if (legacy) {
+        setWallets((prev) =>
+          prev.length === 0
+            ? [{ info: { uuid: "legacy", name: "Browser wallet", icon: "", rdns: "legacy" }, provider: legacy }]
+            : prev,
+        );
+      }
+    }, 500);
+    return () => {
+      window.removeEventListener("eip6963:announceProvider", onAnnounce as EventListener);
+      clearTimeout(t);
     };
-    provider.on?.("accountsChanged", onAccounts);
-    return () => provider.removeListener?.("accountsChanged", onAccounts);
-  }, [bind, disconnect]);
+  }, []);
+
+  // Silent eager-reconnect to the previously used wallet once it's discovered.
+  useEffect(() => {
+    if (address) return;
+    const rdns = localStorage.getItem(CONNECTED_KEY);
+    if (!rdns) return;
+    const w = wallets.find((x) => x.info.rdns === rdns);
+    if (!w) return;
+    w.provider
+      .request({ method: "eth_accounts" })
+      .then((accs: string[]) => {
+        if (accs?.[0]) bind(accs[0], w.provider);
+      })
+      .catch(() => {});
+  }, [wallets, address, bind]);
+
+  const connect = useCallback(
+    async (w?: Discovered) => {
+      const pick = w ?? wallets[0];
+      if (!pick) throw new Error("No wallet detected. Install MetaMask or Rabby, then try again.");
+      setConnecting(true);
+      try {
+        const accs: string[] = await pick.provider.request({ method: "eth_requestAccounts" });
+        if (!accs?.[0]) throw new Error("No account selected.");
+        try {
+          await pick.provider.request({
+            method: "wallet_addEthereumChain",
+            params: [
+              {
+                chainId: STUDIONET_HEX,
+                chainName: "GenLayer Studionet",
+                rpcUrls: ["https://studio.genlayer.com/api"],
+                nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
+              },
+            ],
+          });
+        } catch {
+          /* declined or already added — continue */
+        }
+        bind(accs[0], pick.provider);
+        localStorage.setItem(CONNECTED_KEY, pick.info.rdns);
+      } finally {
+        setConnecting(false);
+      }
+    },
+    [wallets, bind],
+  );
 
   return (
     <Ctx.Provider
@@ -129,7 +168,8 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         address,
         client,
         connecting,
-        hasWallet,
+        wallets,
+        hasWallet: wallets.length > 0,
         chainName: CHAIN_NAME,
         gasSponsored: GAS_SPONSORED,
         balanceWei,

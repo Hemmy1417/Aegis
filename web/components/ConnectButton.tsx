@@ -1,14 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useWallet } from "@/lib/wallet";
+import { useWallet, type Discovered } from "@/lib/wallet";
 
 function short(a: string) {
   return a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "";
 }
 
 export function ConnectButton() {
-  const { address, connecting, hasWallet, connect, disconnect } = useWallet();
+  const { address, connecting, wallets, connect, disconnect } = useWallet();
   const [open, setOpen] = useState(false);
   const [err, setErr] = useState("");
   const [copied, setCopied] = useState(false);
@@ -22,10 +22,11 @@ export function ConnectButton() {
     return () => document.removeEventListener("mousedown", onDoc);
   }, []);
 
-  async function onConnect() {
+  async function onPick(w: Discovered) {
     setErr("");
     try {
-      await connect();
+      await connect(w);
+      setOpen(false);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     }
@@ -40,22 +41,37 @@ export function ConnectButton() {
   if (!address) {
     return (
       <div className="relative" ref={ref}>
-        <button onClick={onConnect} disabled={connecting} className="ink-pill text-sm">
+        <button onClick={() => setOpen((o) => !o)} disabled={connecting} className="ink-pill text-sm">
           {connecting ? "Connecting…" : "Connect wallet"}
         </button>
-        {err && (
-          <div className="absolute right-0 mt-2 w-64 card p-3 z-30 shadow-lg">
-            <p className="text-xs text-body">{err}</p>
-            {!hasWallet && (
-              <a
-                href="https://rabby.io"
-                target="_blank"
-                rel="noreferrer"
-                className="mt-2 inline-block text-xs text-ink underline underline-offset-4"
-              >
-                Install a wallet (Rabby / MetaMask) ↗
-              </a>
+        {open && (
+          <div className="absolute right-0 mt-2 w-64 card p-2 z-30 shadow-lg">
+            <p className="eyebrow px-2 py-2">Choose a wallet</p>
+            {wallets.length === 0 ? (
+              <div className="px-2 py-2">
+                <p className="text-xs text-body">No wallet detected.</p>
+                <a href="https://rabby.io" target="_blank" rel="noreferrer" className="mt-2 inline-block text-xs text-ink underline underline-offset-4">
+                  Install a wallet (Rabby / MetaMask) ↗
+                </a>
+              </div>
+            ) : (
+              wallets.map((w) => (
+                <button
+                  key={w.info.uuid}
+                  onClick={() => onPick(w)}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-strong transition-colors text-left"
+                >
+                  {w.info.icon ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={w.info.icon} alt="" width={20} height={20} className="rounded" />
+                  ) : (
+                    <span className="w-5 h-5 rounded bg-surface-strong" />
+                  )}
+                  <span className="text-sm font-medium text-ink">{w.info.name}</span>
+                </button>
+              ))
             )}
+            {err && <p className="px-3 py-2 text-xs text-error break-words">{err}</p>}
           </div>
         )}
       </div>
