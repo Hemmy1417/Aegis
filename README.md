@@ -12,7 +12,7 @@ testing the dispute→settlement flow next, then the frontend (Phase 3).
 | Network | **Studionet** |
 | RPC | `https://studio.genlayer.com/api` |
 | Chain ID | `61999` |
-| Contract address | `0xd4d9d1687C6Be54C3c6528B38e1ab425218B7888` |
+| Contract address | `0xC4D6A20C25ba5d4aD1dCe968f66557A4D28Fb7C1` (Phase 2) |
 | Explorer | https://explorer-studio.genlayer.com (`/tx/<hash>`) |
 
 ## Project summary
