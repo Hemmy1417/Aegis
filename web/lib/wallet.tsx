@@ -1,39 +1,31 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { createClient, createAccount, generatePrivateKey } from "genlayer-js";
+import { createClient } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
 import { getAddress } from "viem";
-
-export type WalletMethod = "builtin" | "metamask";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Client = any;
 
 type WalletState = {
   address: string;
-  method: WalletMethod | null;
   client: Client | null;
   connecting: boolean;
-  hasMetaMask: boolean;
-  // gas
+  hasWallet: boolean; // an injected EIP-1193 wallet is present
   chainName: string;
-  gasSponsored: boolean; // true on Studionet — the network covers gas
+  gasSponsored: boolean; // Studionet covers gas; users still need GEN to fund escrow
   balanceWei: bigint | null;
   refreshBalance: () => Promise<void>;
-  requestTestGen: () => Promise<{ ok: boolean; message: string }>;
-  // connection
-  connectBuiltIn: () => void;
-  connectMetaMask: () => Promise<void>;
+  connect: () => Promise<void>;
   disconnect: () => void;
 };
 
 const Ctx = createContext<WalletState | null>(null);
-const PK_KEY = "aegis_pk";
-const METHOD_KEY = "aegis_wallet_method";
+const CONNECTED_KEY = "aegis_connected";
 const STUDIONET_HEX = "0xF22F"; // 61999
 const CHAIN_NAME = "Studionet";
-const GAS_SPONSORED = true; // Studionet (chain 61999) sponsors gas for contract calls
+const GAS_SPONSORED = true;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function eth(): any {
@@ -42,10 +34,9 @@ function eth(): any {
 
 export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [address, setAddress] = useState("");
-  const [method, setMethod] = useState<WalletMethod | null>(null);
   const [client, setClient] = useState<Client | null>(null);
   const [connecting, setConnecting] = useState(false);
-  const [hasMetaMask, setHasMetaMask] = useState(false);
+  const [hasWallet, setHasWallet] = useState(false);
   const [balanceWei, setBalanceWei] = useState<bigint | null>(null);
 
   const refreshBalance = useCallback(async () => {
@@ -65,47 +56,22 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     refreshBalance();
   }, [refreshBalance]);
 
-  const requestTestGen = useCallback(async (): Promise<{ ok: boolean; message: string }> => {
-    if (!client || !address) return { ok: false, message: "Connect a wallet first." };
-    try {
-      // Programmatic faucet — works on localnet; Studionet/testnet throw and we handle it.
-      await client.fundAccount(address, BigInt("1000000000000000000"));
-      await refreshBalance();
-      return { ok: true, message: "Funded with test GEN." };
-    } catch {
-      return {
-        ok: false,
-        message: GAS_SPONSORED
-          ? "Studionet sponsors gas — no top-up needed. You're clear to verify."
-          : "Open the GenLayer faucet to fund this wallet, then refresh.",
-      };
-    }
-  }, [client, address, refreshBalance]);
-
-  const connectBuiltIn = useCallback(() => {
-    let pk = localStorage.getItem(PK_KEY);
-    if (!pk) {
-      pk = generatePrivateKey();
-      localStorage.setItem(PK_KEY, pk);
-    }
-    const account = createAccount(pk as `0x${string}`);
-    setClient(createClient({ chain: studionet, account }));
-    setAddress(account.address);
-    setMethod("builtin");
-    localStorage.setItem(METHOD_KEY, "builtin");
+  const bind = useCallback((raw: string) => {
+    // Injected wallets often return a lowercase address; the contract keys state by the
+    // EIP-55 checksummed address — normalize so read-backs (deals, reputation) match.
+    const addr = getAddress(raw);
+    setClient(createClient({ chain: studionet, account: addr }));
+    setAddress(addr);
   }, []);
 
-  const connectMetaMask = useCallback(async () => {
+  const connect = useCallback(async () => {
     const provider = eth();
-    if (!provider) throw new Error("MetaMask not detected. Install it, or use the Instant Wallet.");
+    if (!provider) throw new Error("No wallet detected. Install MetaMask or Rabby, then try again.");
     setConnecting(true);
     try {
       const accounts: string[] = await provider.request({ method: "eth_requestAccounts" });
       const raw = accounts?.[0];
       if (!raw) throw new Error("No account selected.");
-      // Injected wallets (MetaMask, Rabby, …) often return a lowercase address, but the
-      // contract keys state by the EIP-55 checksummed address — normalize so read-backs match.
-      const addr = getAddress(raw);
       try {
         await provider.request({
           method: "wallet_addEthereumChain",
@@ -121,43 +87,54 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       } catch {
         /* declined or already added — continue */
       }
-      setClient(createClient({ chain: studionet, account: addr }));
-      setAddress(addr);
-      setMethod("metamask");
-      localStorage.setItem(METHOD_KEY, "metamask");
+      bind(raw);
+      localStorage.setItem(CONNECTED_KEY, "1");
     } finally {
       setConnecting(false);
     }
-  }, []);
+  }, [bind]);
 
   const disconnect = useCallback(() => {
     setAddress("");
     setClient(null);
-    setMethod(null);
     setBalanceWei(null);
-    localStorage.removeItem(METHOD_KEY);
+    localStorage.removeItem(CONNECTED_KEY);
   }, []);
 
   useEffect(() => {
-    setHasMetaMask(!!eth());
-    if (localStorage.getItem(METHOD_KEY) === "builtin") connectBuiltIn();
-  }, [connectBuiltIn]);
+    const provider = eth();
+    setHasWallet(!!provider);
+    if (!provider) return;
+    // Silent eager-reconnect if previously connected (no popup).
+    if (localStorage.getItem(CONNECTED_KEY) === "1") {
+      provider
+        .request({ method: "eth_accounts" })
+        .then((accs: string[]) => {
+          if (accs?.[0]) bind(accs[0]);
+        })
+        .catch(() => {});
+    }
+    // React to account / chain changes from the wallet.
+    const onAccounts = (accs: string[]) => {
+      if (accs?.[0]) bind(accs[0]);
+      else disconnect();
+    };
+    provider.on?.("accountsChanged", onAccounts);
+    return () => provider.removeListener?.("accountsChanged", onAccounts);
+  }, [bind, disconnect]);
 
   return (
     <Ctx.Provider
       value={{
         address,
-        method,
         client,
         connecting,
-        hasMetaMask,
+        hasWallet,
         chainName: CHAIN_NAME,
         gasSponsored: GAS_SPONSORED,
         balanceWei,
         refreshBalance,
-        requestTestGen,
-        connectBuiltIn,
-        connectMetaMask,
+        connect,
         disconnect,
       }}
     >

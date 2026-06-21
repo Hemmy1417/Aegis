@@ -8,7 +8,7 @@ import { createDeal, getDealsByAddress, genToWei } from "@/lib/aegis";
 
 export default function NewDealPage() {
   const router = useRouter();
-  const { address, client, connectBuiltIn } = useWallet();
+  const { address, client, connect } = useWallet();
 
   const [freelancer, setFreelancer] = useState("");
   const [amount, setAmount] = useState("");
@@ -42,8 +42,8 @@ export default function NewDealPage() {
     return (
       <div className="mx-auto max-w-xl px-5 py-24 text-center">
         <h1 className="display text-4xl">Start a deal</h1>
-        <p className="mt-4 text-body">Connect a wallet to fund an escrow. The Instant Wallet is free and gas is sponsored on Studionet.</p>
-        <button onClick={connectBuiltIn} className="ink-pill mt-7">⚡ Create instant wallet</button>
+        <p className="mt-4 text-body">Connect your wallet to fund an escrow. Aegis works with MetaMask, Rabby, or any browser wallet — gas is sponsored on Studionet.</p>
+        <button onClick={() => connect().catch(() => {})} className="ink-pill mt-7">Connect wallet</button>
       </div>
     );
   }

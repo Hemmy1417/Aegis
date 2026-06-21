@@ -10,7 +10,7 @@ import {
 } from "@/lib/aegis";
 
 export default function DashboardPage() {
-  const { address, connectBuiltIn } = useWallet();
+  const { address, connect } = useWallet();
   const [deals, setDeals] = useState<Deal[]>([]);
   const [rep, setRep] = useState<Reputation | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
@@ -41,8 +41,8 @@ export default function DashboardPage() {
     return (
       <div className="mx-auto max-w-xl px-5 py-24 text-center">
         <h1 className="display text-4xl">Your dashboard</h1>
-        <p className="mt-4 text-body">Connect a wallet to see your deals and reputation.</p>
-        <button onClick={connectBuiltIn} className="ink-pill mt-7">⚡ Create instant wallet</button>
+        <p className="mt-4 text-body">Connect your wallet to see your deals and reputation.</p>
+        <button onClick={() => connect().catch(() => {})} className="ink-pill mt-7">Connect wallet</button>
       </div>
     );
   }
