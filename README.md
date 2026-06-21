@@ -3,7 +3,17 @@
 > Lock payment for a job in escrow. If there's a dispute, an AI-validator panel reads the agreed
 > terms and both sides' cases and rules how the money splits — trustlessly, on-chain.
 
-**Status:** 🟡 **Phase 0 complete** (planning). Building Phase 1 (Intelligent Contract MVP) next.
+**Status:** 🟢 **Phase 1 contract deployed** on Studionet. Core escrow + AI arbitration MVP is live;
+testing the dispute→settlement flow next, then the frontend (Phase 3).
+
+## Contract details
+| Field | Value |
+|---|---|
+| Network | **Studionet** |
+| RPC | `https://studio.genlayer.com/api` |
+| Chain ID | `61999` |
+| Contract address | `0xd4d9d1687C6Be54C3c6528B38e1ab425218B7888` |
+| Explorer | https://explorer-studio.genlayer.com (`/tx/<hash>`) |
 
 ## Project summary
 Freelance escrow needs someone to judge *"did they deliver what was agreed?"* — today that's a
