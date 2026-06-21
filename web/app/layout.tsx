@@ -4,6 +4,7 @@ import Link from "next/link";
 import "./globals.css";
 import { WalletProvider } from "@/lib/wallet";
 import { ConnectButton } from "@/components/ConnectButton";
+import { NotificationsBell } from "@/components/NotificationsBell";
 import { AegisWordmark } from "@/components/Logo";
 import { CONTRACT_CONFIGURED } from "@/lib/config";
 
@@ -51,6 +52,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     {l.label}
                   </Link>
                 ))}
+                <NotificationsBell />
                 <ConnectButton />
               </div>
             </nav>
