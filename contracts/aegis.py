@@ -18,6 +18,8 @@ MAX_TERMS = 4000
 MAX_CASE = 4000
 
 # Lifecycle:
+#   OPEN -> (claim_deal) -> CREATED                       (job board: client posts, freelancer claims)
+#   OPEN -> CANCELLED                                     (client withdraws an unclaimed job -> refund)
 #   CREATED -> DELIVERED -> SETTLED                       (client approves)
 #   ... -> DISPUTED -> (resolve) -> RULED -> (finalize) -> SETTLED
 #                                -> NEEDS_REVIEW          (UNCLEAR/low confidence; held)
@@ -104,19 +106,23 @@ class Aegis(gl.Contract):
     total_deals: u256
     total_settled: u256
     total_disputed: u256
+    total_open: u256
     deals: TreeMap[str, str]          # "d-<seq>" -> Deal JSON
     deals_by_addr: TreeMap[str, str]  # address   -> JSON list of deal_ids
     reputation: TreeMap[str, str]     # address   -> Reputation JSON
     settled_index: TreeMap[str, str]  # str(seq)  -> deal_id
+    open_index: TreeMap[str, str]     # str(seq)  -> deal_id (job-board feed)
 
     def __init__(self) -> None:
         self.total_deals = u256(0)
         self.total_settled = u256(0)
         self.total_disputed = u256(0)
+        self.total_open = u256(0)
         self.deals = TreeMap()
         self.deals_by_addr = TreeMap()
         self.reputation = TreeMap()
         self.settled_index = TreeMap()
+        self.open_index = TreeMap()
 
     # -------------------------------------------------------- internal (undecorated) helpers
     def _get(self, deal_id: str):
@@ -204,14 +210,18 @@ class Aegis(gl.Contract):
     # ----------------------------------------------------------------------------- writes
     @gl.public.write.payable
     def create_deal(self, freelancer: str, terms: str) -> str:
+        # freelancer may be "" to post an OPEN job any wallet can claim, or a specific
+        # address to assign the deal directly. Either way the escrow is funded now.
         client = str(gl.message.sender_address)
         fr = freelancer.strip()
         t = terms.strip()
         amount = int(gl.message.value)
-        if not _is_addr(fr):
-            raise gl.vm.UserError("invalid freelancer address")
-        if fr.lower() == client.lower():
-            raise gl.vm.UserError("client and freelancer must differ")
+        is_open = fr == ""
+        if not is_open:
+            if not _is_addr(fr):
+                raise gl.vm.UserError("invalid freelancer address")
+            if fr.lower() == client.lower():
+                raise gl.vm.UserError("client and freelancer must differ")
         if not t or len(t) > MAX_TERMS:
             raise gl.vm.UserError("invalid terms")
         if amount <= 0:
@@ -220,14 +230,33 @@ class Aegis(gl.Contract):
         deal_id = f"d-{seq}"
         deal = {
             "id": deal_id, "client": client, "freelancer": fr, "amount": str(amount),
-            "terms": t, "deliverable_uri": "", "status": "CREATED",
+            "terms": t, "deliverable_uri": "", "status": "OPEN" if is_open else "CREATED",
             "client_case": "", "freelancer_case": "", "ruling": None,
             "appealed": False, "cancel_flags": [], "created_seq": seq,
         }
         self._save(deal)
         self._index(client, deal_id)
-        self._index(fr, deal_id)
+        if is_open:
+            self.open_index[str(int(self.total_open))] = deal_id
+            self.total_open = u256(int(self.total_open) + 1)
+        else:
+            self._index(fr, deal_id)
         self.total_deals = u256(seq + 1)
+        return json.dumps(deal)
+
+    @gl.public.write
+    def claim_deal(self, deal_id: str) -> str:
+        # A freelancer claims an OPEN job, becoming the assigned freelancer.
+        deal = self._get(deal_id)
+        sender = str(gl.message.sender_address)
+        if deal["status"] != "OPEN":
+            raise gl.vm.UserError("this job is not open to claim")
+        if sender.lower() == deal["client"].lower():
+            raise gl.vm.UserError("the client cannot claim their own job")
+        deal["freelancer"] = sender
+        deal["status"] = "CREATED"
+        self._save(deal)
+        self._index(sender, deal_id)
         return json.dumps(deal)
 
     @gl.public.write
@@ -349,9 +378,17 @@ class Aegis(gl.Contract):
 
     @gl.public.write
     def cancel(self, deal_id: str) -> str:
-        # Mutual cancellation: both parties call cancel -> refund the client.
         deal = self._get(deal_id)
         sender = str(gl.message.sender_address)
+        # An OPEN job has no freelancer yet — the client can withdraw it solo and is refunded.
+        if deal["status"] == "OPEN":
+            if sender.lower() != deal["client"].lower():
+                raise gl.vm.UserError("only the client can withdraw an open job")
+            self._pay(deal["client"], int(deal["amount"]))
+            deal["status"] = "CANCELLED"
+            self._save(deal)
+            return json.dumps(deal)
+        # Otherwise: mutual cancellation — both parties call cancel -> refund the client.
         if sender.lower() not in (deal["client"].lower(), deal["freelancer"].lower()):
             raise gl.vm.UserError("only a party to the deal may cancel")
         if deal["status"] not in ("CREATED", "DELIVERED", "DISPUTED", "NEEDS_REVIEW"):
@@ -399,6 +436,22 @@ class Aegis(gl.Contract):
             "total_settled": int(self.total_settled),
             "total_disputed": int(self.total_disputed),
         })
+
+    @gl.public.view
+    def get_open_deals(self, n: int) -> str:
+        # The job board: up to n still-OPEN jobs, most recent first.
+        out = []
+        i = int(self.total_open) - 1
+        while i >= 0 and len(out) < n:
+            did = self.open_index.get(str(i), "")
+            if did:
+                raw = self.deals.get(did, "")
+                if raw:
+                    d = json.loads(raw)
+                    if d.get("status") == "OPEN":
+                        out.append(d)
+            i -= 1
+        return json.dumps(out)
 
     @gl.public.view
     def get_latest(self, n: int) -> str:
