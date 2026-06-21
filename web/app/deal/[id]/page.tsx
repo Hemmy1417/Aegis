@@ -5,9 +5,10 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useWallet } from "@/lib/wallet";
 import { StatusBadge } from "@/components/StatusBadge";
+import { SpecLock } from "@/components/SpecLock";
 import { OUTCOME_LABEL, explorerTxUrl } from "@/lib/config";
 import {
-  getDeal, submitDeliverable, approve, dispute, submitCase, resolve, appeal, finalize, cancel,
+  getDeal, claimDeal, submitDeliverable, approve, dispute, submitCase, resolve, appeal, finalize, cancel,
   genFromWei, type Deal,
 } from "@/lib/aegis";
 
@@ -42,8 +43,9 @@ export default function DealPage() {
 
   const me = address.toLowerCase();
   const isClient = !!deal && me === deal.client.toLowerCase();
-  const isFreelancer = !!deal && me === deal.freelancer.toLowerCase();
+  const isFreelancer = !!deal && !!deal.freelancer && me === deal.freelancer.toLowerCase();
   const isParty = isClient || isFreelancer;
+  const isOpen = deal?.status === "OPEN";
 
   async function run(label: string, fn: () => Promise<string>) {
     if (!client) return;
@@ -98,12 +100,15 @@ export default function DealPage() {
       {/* parties + terms */}
       <div className="card p-7 mt-6 space-y-4">
         <div className="grid sm:grid-cols-2 gap-4">
-          <Field label={`Client${isClient ? " · you" : ""}`} value={short(deal.client)} mono />
-          <Field label={`Freelancer${isFreelancer ? " · you" : ""}`} value={short(deal.freelancer)} mono />
+          <Field label={`Client${isClient ? " · you" : ""}`} value={short(deal.client)} mono href={`/u/${deal.client}`} />
+          <Field label={`Freelancer${isFreelancer ? " · you" : ""}`} value={deal.freelancer ? short(deal.freelancer) : "Unclaimed"} mono={!!deal.freelancer} href={deal.freelancer ? `/u/${deal.freelancer}` : undefined} />
         </div>
         <div>
           <p className="eyebrow">Terms</p>
           <p className="mt-1.5 text-body whitespace-pre-wrap">{deal.terms}</p>
+          <div className="mt-3">
+            <SpecLock terms={deal.terms} />
+          </div>
         </div>
         {deal.deliverable_uri && (
           <div>
@@ -146,8 +151,34 @@ export default function DealPage() {
         </div>
       )}
 
+      {/* open job: claim (visitors) or withdraw (client) */}
+      {isOpen && (
+        <div className="card p-7 mt-4">
+          {isClient ? (
+            <>
+              <h2 className="text-[1.15rem] font-medium text-ink">Your open job</h2>
+              <p className="mt-2 text-body">It&apos;s live on the job board, awaiting a freelancer. You can withdraw it while it&apos;s unclaimed and get refunded.</p>
+              <button onClick={() => run("cancel", () => cancel(client, id))} disabled={!!busy} className="btn-outline mt-4">
+                {busy === "cancel" ? "Withdrawing…" : "Withdraw job & refund"}
+              </button>
+            </>
+          ) : address ? (
+            <>
+              <h2 className="text-[1.15rem] font-medium text-ink">Claim this job</h2>
+              <p className="mt-2 text-body">The <strong className="text-ink">{genFromWei(deal.amount)} GEN</strong> payment is already locked in escrow. Claim it to become the assigned freelancer.</p>
+              <button onClick={() => run("claim", () => claimDeal(client, id))} disabled={!!busy} className="ink-pill mt-4">
+                {busy === "claim" ? "Claiming…" : "Claim this job"}
+              </button>
+            </>
+          ) : (
+            <p className="text-body">Connect a wallet to claim this job.</p>
+          )}
+          {error && <p className="mt-4 text-sm text-error break-words">{error}</p>}
+        </div>
+      )}
+
       {/* actions */}
-      {isParty && s !== "SETTLED" && s !== "CANCELLED" && (
+      {isParty && !isOpen && s !== "SETTLED" && s !== "CANCELLED" && (
         <div className="card p-7 mt-4">
           <h2 className="text-[1.15rem] font-medium text-ink">Actions</h2>
 
@@ -233,7 +264,7 @@ export default function DealPage() {
         </div>
       )}
 
-      {!isParty && address && (
+      {!isParty && !isOpen && address && (
         <p className="mt-4 text-sm text-muted">You&apos;re viewing this deal as an observer — only the client and freelancer can act on it.</p>
       )}
 
@@ -255,11 +286,16 @@ export default function DealPage() {
   );
 }
 
-function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function Field({ label, value, mono, href }: { label: string; value: string; mono?: boolean; href?: string }) {
+  const cls = `mt-1 text-ink ${mono ? "font-mono text-sm" : ""}`;
   return (
     <div>
       <p className="eyebrow">{label}</p>
-      <p className={`mt-1 text-ink ${mono ? "font-mono text-sm" : ""}`}>{value}</p>
+      {href ? (
+        <Link href={href} className={`${cls} block hover:underline underline-offset-4`}>{value}</Link>
+      ) : (
+        <p className={cls}>{value}</p>
+      )}
     </div>
   );
 }

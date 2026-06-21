@@ -5,6 +5,7 @@
 // WRITES take the connected wallet's `client` (from useWallet).
 import { createClient, createAccount, generatePrivateKey } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
+import { keccak256, stringToBytes } from "viem";
 import { CONTRACT_ADDRESS } from "./config";
 
 export type Ruling = {
@@ -90,6 +91,11 @@ export async function getLatest(n = 12): Promise<Deal[]> {
   return raw ? JSON.parse(raw) : [];
 }
 
+export async function getOpenDeals(n = 24): Promise<Deal[]> {
+  const raw = await read("get_open_deals", [n]);
+  return raw ? JSON.parse(raw) : [];
+}
+
 // ---- writes ----
 async function writeAndWait(client: Client, functionName: string, args: unknown[], value?: bigint) {
   const params: Record<string, unknown> = { address: CONTRACT_ADDRESS, functionName, args };
@@ -109,6 +115,9 @@ export async function createDeal(
   return writeAndWait(client, "create_deal", [freelancer, terms], valueWei);
 }
 
+export async function claimDeal(client: Client, dealId: string): Promise<string> {
+  return writeAndWait(client, "claim_deal", [dealId]);
+}
 export async function submitDeliverable(client: Client, dealId: string, uri: string): Promise<string> {
   return writeAndWait(client, "submit_deliverable", [dealId, uri]);
 }
@@ -139,6 +148,19 @@ export function genFromWei(wei: string | bigint): string {
   const n = Number(BigInt(wei || "0")) / 1e18;
   return n === 0 ? "0" : n.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
+// Deterministic fingerprint of the locked terms — both parties can verify the same
+// spec. The terms are immutable on-chain once the deal exists; this just makes that visible.
+export function specHash(terms: string): string {
+  try {
+    return keccak256(stringToBytes((terms || "").trim()));
+  } catch {
+    return "";
+  }
+}
+export function shortHash(h: string): string {
+  return h ? `${h.slice(0, 10)}…${h.slice(-4)}` : "";
+}
+
 export function genToWei(gen: string): bigint {
   const n = Number(gen);
   if (!isFinite(n) || n <= 0) return 0n;

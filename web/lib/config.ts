@@ -13,6 +13,7 @@ export function explorerTxUrl(hash: string): string {
 
 // Deal status → display label + tone (drives badge colors).
 export const STATUS_META: Record<string, { label: string; tone: "neutral" | "active" | "warn" | "good" | "bad" }> = {
+  OPEN: { label: "Open · awaiting a freelancer", tone: "active" },
   CREATED: { label: "Funded · awaiting work", tone: "active" },
   DELIVERED: { label: "Delivered · awaiting review", tone: "active" },
   DISPUTED: { label: "In dispute", tone: "warn" },

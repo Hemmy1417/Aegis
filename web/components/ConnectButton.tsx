@@ -43,11 +43,9 @@ export function ConnectButton() {
         <button onClick={onConnect} disabled={connecting} className="ink-pill text-sm">
           {connecting ? "Connecting…" : "Connect wallet"}
         </button>
-        {(err || !hasWallet) && (
+        {err && (
           <div className="absolute right-0 mt-2 w-64 card p-3 z-30 shadow-lg">
-            <p className="text-xs text-body">
-              {err || "No wallet detected."}
-            </p>
+            <p className="text-xs text-body">{err}</p>
             {!hasWallet && (
               <a
                 href="https://rabby.io"

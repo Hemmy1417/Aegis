@@ -24,9 +24,10 @@ export const metadata: Metadata = {
 };
 
 const navLinks = [
-  { href: "/new", label: "New deal" },
+  { href: "/jobs", label: "Find work" },
+  { href: "/new", label: "Post a job" },
+  { href: "/resolved", label: "Resolved" },
   { href: "/dashboard", label: "Dashboard" },
-  { href: "/#how", label: "How it works" },
 ];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

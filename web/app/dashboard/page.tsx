@@ -47,6 +47,10 @@ export default function DashboardPage() {
     );
   }
 
+  const me = address.toLowerCase();
+  const asClient = deals.filter((d) => d.client.toLowerCase() === me);
+  const asFreelancer = deals.filter((d) => d.freelancer && d.freelancer.toLowerCase() === me);
+
   return (
     <div className="mx-auto max-w-5xl px-5 py-14">
       <div className="flex items-end justify-between gap-4 flex-wrap">
@@ -65,35 +69,60 @@ export default function DashboardPage() {
         <Stat label="Network deals" value={stats ? `${stats.total_deals}` : "—"} sub={stats ? `${stats.total_settled} settled` : ""} />
       </div>
 
-      {/* deals list */}
-      <div className="mt-10">
-        <p className="eyebrow">{loading ? "Loading…" : `${deals.length} deal${deals.length === 1 ? "" : "s"}`}</p>
-        {deals.length === 0 && !loading ? (
-          <div className="card p-10 mt-3 text-center">
-            <p className="text-body">No deals yet.</p>
-            <Link href="/new" className="ink-pill mt-5">Start your first deal</Link>
+      {/* role-split deals */}
+      {deals.length === 0 && !loading ? (
+        <div className="card p-10 mt-10 text-center">
+          <p className="text-body">No deals yet.</p>
+          <div className="mt-5 flex items-center justify-center gap-3">
+            <Link href="/new" className="ink-pill">Post a job</Link>
+            <Link href="/jobs" className="btn-outline">Find work</Link>
           </div>
-        ) : (
-          <div className="mt-3 space-y-3">
-            {deals.map((d) => {
-              const role = d.client.toLowerCase() === address.toLowerCase() ? "Client" : "Freelancer";
-              return (
-                <Link key={d.id} href={`/deal/${d.id}`} className="card card-hover p-5 flex items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-medium text-ink">{genFromWei(d.amount)} GEN</span>
-                      <span className="badge">{role}</span>
-                    </div>
-                    <p className="mt-1 text-[0.9rem] text-muted truncate max-w-md">{d.terms}</p>
-                  </div>
-                  <StatusBadge status={d.status} />
-                </Link>
-              );
-            })}
-          </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="mt-10 space-y-10">
+          <DealGroup
+            title="Hiring (as client)"
+            empty="You haven't posted any jobs."
+            cta={{ href: "/new", label: "Post a job" }}
+            deals={asClient}
+          />
+          <DealGroup
+            title="Working (as freelancer)"
+            empty="You haven't taken on any jobs."
+            cta={{ href: "/jobs", label: "Find work" }}
+            deals={asFreelancer}
+          />
+        </div>
+      )}
     </div>
+  );
+}
+
+function DealGroup({
+  title, empty, cta, deals,
+}: { title: string; empty: string; cta: { href: string; label: string }; deals: Deal[] }) {
+  return (
+    <section>
+      <p className="eyebrow">{title} · {deals.length}</p>
+      {deals.length === 0 ? (
+        <div className="card p-6 mt-3 flex items-center justify-between gap-4">
+          <p className="text-[0.95rem] text-muted">{empty}</p>
+          <Link href={cta.href} className="btn-outline text-xs whitespace-nowrap">{cta.label}</Link>
+        </div>
+      ) : (
+        <div className="mt-3 space-y-3">
+          {deals.map((d) => (
+            <Link key={d.id} href={`/deal/${d.id}`} className="card card-hover p-5 flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <span className="font-medium text-ink">{genFromWei(d.amount)} GEN</span>
+                <p className="mt-1 text-[0.9rem] text-muted truncate max-w-md">{d.terms}</p>
+              </div>
+              <StatusBadge status={d.status} />
+            </Link>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
