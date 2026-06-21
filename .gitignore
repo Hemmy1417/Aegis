@@ -18,3 +18,9 @@ web/.env*.local
 *.log
 npm-debug.log*
 .vercel
+
+# dev-only scaffolding (kept local, out of the public repo)
+contracts/_escrow_probe.py
+web/AGENTS.md
+web/CLAUDE.md
+web/DESIGN.md
