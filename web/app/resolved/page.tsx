@@ -13,6 +13,7 @@ export default function ResolvedPage() {
   useEffect(() => {
     getLatest(24)
       .then(setDeals)
+      .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 

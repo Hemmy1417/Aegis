@@ -23,6 +23,8 @@ export default function JobsPage() {
     setLoading(true);
     try {
       setJobs(await getOpenDeals(36));
+    } catch {
+      setJobs([]);
     } finally {
       setLoading(false);
     }

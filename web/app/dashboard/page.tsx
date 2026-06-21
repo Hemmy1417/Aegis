@@ -28,6 +28,8 @@ export default function DashboardPage() {
       setDeals(d.sort((a, b) => b.created_seq - a.created_seq));
       setRep(r);
       setStats(s);
+    } catch {
+      /* leave prior/empty state — reads degrade gracefully */
     } finally {
       setLoading(false);
     }

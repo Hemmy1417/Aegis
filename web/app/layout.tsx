@@ -5,6 +5,7 @@ import "./globals.css";
 import { WalletProvider } from "@/lib/wallet";
 import { ConnectButton } from "@/components/ConnectButton";
 import { AegisWordmark } from "@/components/Logo";
+import { CONTRACT_CONFIGURED } from "@/lib/config";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -55,6 +56,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </nav>
           </header>
 
+          {!CONTRACT_CONFIGURED && (
+            <div className="bg-amber-50 border-b border-amber-200 text-amber-900 text-sm text-center px-4 py-2">
+              Contract address not set — define <code className="font-mono">NEXT_PUBLIC_CONTRACT_ADDRESS</code> to load on-chain data.
+            </div>
+          )}
           <main className="flex-1 relative">{children}</main>
 
           <footer className="border-t border-hairline bg-canvas">

@@ -32,6 +32,8 @@ export default function DealPage() {
   const load = useCallback(async () => {
     try {
       setDeal(await getDeal(id));
+    } catch {
+      setDeal(null);
     } finally {
       setLoading(false);
     }
