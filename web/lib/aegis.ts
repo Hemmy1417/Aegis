@@ -4,9 +4,8 @@
 // READS use an internal read-only client (no wallet needed).
 // WRITES take the connected wallet's `client` (from useWallet).
 import { createClient, createAccount, generatePrivateKey } from "genlayer-js";
-import { studionet } from "genlayer-js/chains";
 import { keccak256, stringToBytes } from "viem";
-import { CONTRACT_ADDRESS } from "./config";
+import { CONTRACT_ADDRESS, CHAIN } from "./config";
 
 export type Ruling = {
   outcome: string;
@@ -49,7 +48,7 @@ type Client = any;
 let _read: Client = null;
 function readClient(): Client {
   if (!_read) {
-    _read = createClient({ chain: studionet, account: createAccount(generatePrivateKey()) });
+    _read = createClient({ chain: CHAIN, account: createAccount(generatePrivateKey()) });
   }
   return _read;
 }
@@ -58,9 +57,24 @@ function asString(v: unknown): string {
   return typeof v === "string" ? v : v == null ? "" : String(v);
 }
 
+// Public testnet RPCs (Bradbury) rate-limit gen_call; retry transient limits with backoff.
 async function read(functionName: string, args: unknown[] = []): Promise<string> {
-  const raw = await readClient().readContract({ address: CONTRACT_ADDRESS, functionName, args });
-  return asString(raw);
+  let lastErr: unknown;
+  for (let i = 0; i < 4; i++) {
+    try {
+      const raw = await readClient().readContract({ address: CONTRACT_ADDRESS, functionName, args });
+      return asString(raw);
+    } catch (e) {
+      lastErr = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (i < 3 && /rate limit|429|too many|temporarily/i.test(msg)) {
+        await new Promise((r) => setTimeout(r, 700 * (i + 1)));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
 }
 
 // ---- reads ----
@@ -101,7 +115,9 @@ async function writeAndWait(client: Client, functionName: string, args: unknown[
   const params: Record<string, unknown> = { address: CONTRACT_ADDRESS, functionName, args };
   if (value !== undefined) params.value = value;
   const hash = await client.writeContract(params);
-  await client.waitForTransactionReceipt({ hash, status: "FINALIZED", interval: 5000, retries: 60 });
+  // Wait for ACCEPTED (state applied), not FINALIZED — on a real testnet (Bradbury) the
+  // finalization window can take minutes, while ACCEPTED lands in seconds.
+  await client.waitForTransactionReceipt({ hash, status: "ACCEPTED", interval: 4000, retries: 45 });
   return asString(hash);
 }
 

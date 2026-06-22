@@ -5,6 +5,11 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useWallet } from "@/lib/wallet";
 import { createDeal, getDealsByAddress, genToWei } from "@/lib/aegis";
+import { GAS_SPONSORED, NETWORK_LABEL } from "@/lib/config";
+
+const GAS_NOTE = GAS_SPONSORED
+  ? `gas is sponsored on ${NETWORK_LABEL}.`
+  : `you'll need testnet GEN on ${NETWORK_LABEL} for gas.`;
 
 type Mode = "open" | "assign";
 
@@ -57,7 +62,7 @@ export default function NewDealPage() {
     return (
       <div className="mx-auto max-w-xl px-5 py-24 text-center">
         <h1 className="display text-4xl">Post a job</h1>
-        <p className="mt-4 text-body">Connect your wallet to fund an escrow. Aegis works with MetaMask, Rabby, or any browser wallet — gas is sponsored on Studionet.</p>
+        <p className="mt-4 text-body">Connect your wallet to fund an escrow. Aegis works with MetaMask, Rabby, or any browser wallet — {GAS_NOTE}</p>
         <button onClick={() => connect().catch(() => {})} className="ink-pill mt-7">Connect wallet</button>
       </div>
     );
@@ -153,7 +158,7 @@ export default function NewDealPage() {
         <button onClick={onCreate} disabled={!valid || busy} className="ink-pill w-full">
           {busy ? "Locking escrow…" : `Lock ${amtOk ? amount : ""} GEN ${mode === "open" ? "& post job" : "in escrow"}`}
         </button>
-        <p className="text-xs text-muted text-center">Gas is sponsored on Studionet — you only send the escrow amount.</p>
+        <p className="text-xs text-muted text-center">{GAS_SPONSORED ? `Gas is sponsored on ${NETWORK_LABEL} — you only send the escrow amount.` : `On ${NETWORK_LABEL} you pay gas in testnet GEN plus the escrow amount.`}</p>
       </div>
     </div>
   );

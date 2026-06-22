@@ -6,7 +6,7 @@ import { WalletProvider } from "@/lib/wallet";
 import { ConnectButton } from "@/components/ConnectButton";
 import { NotificationsBell } from "@/components/NotificationsBell";
 import { AegisWordmark } from "@/components/Logo";
-import { CONTRACT_CONFIGURED } from "@/lib/config";
+import { CONTRACT_CONFIGURED, NETWORK_LABEL } from "@/lib/config";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -73,7 +73,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   Escrow + AI arbitration, settled on-chain by a GenLayer validator panel.
                 </p>
               </div>
-              <p className="eyebrow">Sealed on GenLayer · Studionet</p>
+              <p className="eyebrow">Sealed on GenLayer · {NETWORK_LABEL}</p>
             </div>
           </footer>
         </WalletProvider>
