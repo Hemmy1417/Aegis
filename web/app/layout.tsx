@@ -6,6 +6,7 @@ import { WalletProvider } from "@/lib/wallet";
 import { ConnectButton } from "@/components/ConnectButton";
 import { NotificationsBell } from "@/components/NotificationsBell";
 import { AegisWordmark } from "@/components/Logo";
+import { LiveBackdrop } from "@/components/LiveBackdrop";
 import { CONTRACT_CONFIGURED, NETWORK_LABEL } from "@/lib/config";
 
 const inter = Inter({
@@ -36,6 +37,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className={`${inter.variable} ${ebGaramond.variable}`}>
       <body className="min-h-screen flex flex-col">
+        <LiveBackdrop />
         <WalletProvider>
           <header className="sticky top-0 z-40 bg-canvas/85 backdrop-blur border-b border-hairline">
             <nav className="mx-auto max-w-6xl px-5 h-16 flex items-center justify-between">
