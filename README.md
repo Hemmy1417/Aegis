@@ -17,7 +17,10 @@ complete. Next: GitHub + Vercel deploy.
 | Network | **Studionet** |
 | RPC | `https://studio.genlayer.com/api` |
 | Chain ID | `61999` |
-| Contract address | `0xB4eb9957eb141D85bd9Bed45c1E75aaEB039B617` |
+| Contract address | `0x0909593412EF061b2E70ea99661A7d8Cb9Ce9BCd` |
+
+> **Payout fix (July 2026).** Wallet payouts are sent as EVM external messages (an empty `@gl.evm.contract_interface` proxy executed by the contract's ghost account). The previous GenVM-call pattern errored at finalization on plain wallets and stranded the value; the contract was redeployed at the address above with the corrected transfer path.
+
 | Explorer | https://explorer-studio.genlayer.com (`/tx/<hash>`) |
 
 ## Project summary
