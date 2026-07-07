@@ -102,6 +102,18 @@ Respond ONLY with:
 
 
 # ----------------------------------------------------------------------------------- contract
+# Empty EVM interface: paying a wallet is an external message through the
+# chain layer (executed by the IC's ghost contract), NOT a GenVM call —
+# gl.get_contract_at(...).emit_transfer at an EOA errors at finalization
+# and the value is stranded. Proven empirically on Curia round 1.
+@gl.evm.contract_interface
+class _Payee:
+    class View:
+        pass
+    class Write:
+        pass
+
+
 class Aegis(gl.Contract):
     total_deals: u256
     total_settled: u256
@@ -142,7 +154,7 @@ class Aegis(gl.Contract):
 
     def _pay(self, address: str, amount: int) -> None:
         if amount > 0:
-            gl.get_contract_at(Address(address)).emit_transfer(value=u256(amount), on="finalized")
+            _Payee(Address(address)).emit_transfer(value=u256(amount), on="finalized")
 
     def _rep_get(self, address: str):
         raw = self.reputation.get(address, "")
