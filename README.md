@@ -49,10 +49,6 @@ appeal bond followed the revised/upheld flag; an unverifiable deal that ruled UN
 and returned both escrow and appeal bond on mutual cancel; and the plain approve path. The escrow book
 closed to zero after every route.
 
-Stress-tested end-to-end on-chain across five live deals: a design-preference dispute correctly
-ruled RELEASE against the frozen terms with the resolver's own finalize blocked and the sealed case
-locked read-only; a case containing a "SYSTEM OV
-
 ## Project summary
 Freelance escrow needs someone to judge *"did they deliver what was agreed?"* — today that's a
 centralized platform or a lawyer taking a cut. Aegis makes the arbiter an **AI-validator panel** on
