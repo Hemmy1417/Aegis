@@ -8,7 +8,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { SpecLock } from "@/components/SpecLock";
 import { OUTCOME_LABEL, explorerTxUrl } from "@/lib/config";
 import {
-  getDeal, claimDeal, submitDeliverable, approve, dispute, submitCase, resolve, appeal, finalize, cancel,
+  getDeal, getAppealBond, claimDeal, submitDeliverable, approve, dispute, submitCase, resolve, appeal, finalize, cancel,
   genFromWei, type Deal,
 } from "@/lib/aegis";
 
@@ -28,10 +28,15 @@ export default function DealPage() {
   const [txHash, setTxHash] = useState("");
   const [uri, setUri] = useState("");
   const [statement, setStatement] = useState("");
+  const [bond, setBond] = useState<bigint>(0n);
 
   const load = useCallback(async () => {
     try {
-      setDeal(await getDeal(id));
+      const d = await getDeal(id);
+      setDeal(d);
+      if (d && (d.status === "RULED" || d.status === "NEEDS_REVIEW") && !d.appealed) {
+        getAppealBond(id).then(setBond).catch(() => setBond(0n));
+      }
     } catch {
       setDeal(null);
     } finally {
@@ -83,8 +88,11 @@ export default function DealPage() {
 
   const s = deal.status;
   const myCase = isClient ? deal.client_case : isFreelancer ? deal.freelancer_case : "";
+  const mySealed = !!myCase;
   const bothCasesIn = !!deal.client_case && !!deal.freelancer_case;
   const r = deal.ruling;
+  const isResolver = !!deal.resolver && me === deal.resolver.toLowerCase();
+  const bondLabel = genFromWei(bond.toString());
 
   return (
     <div className="mx-auto max-w-3xl px-5 py-14">
@@ -134,7 +142,10 @@ export default function DealPage() {
       {r && (
         <div className="card p-7 mt-4 relative overflow-hidden">
           <div className="orb orb-lavender" style={{ width: 240, height: 240, top: -60, right: -40, opacity: 0.3 }} />
-          <p className="eyebrow relative">AI ruling{deal.appealed ? " · appealed" : ""}</p>
+          <p className="eyebrow relative">
+            AI ruling{deal.appealed ? (deal.appeal_moved ? " · appealed · revised" : " · appealed · upheld") : ""}
+            {deal.resolver ? ` · resolved by ${short(deal.resolver)}` : ""}
+          </p>
           <div className="mt-2 flex items-baseline gap-3 relative flex-wrap">
             <h2 className="display text-3xl">{OUTCOME_LABEL[r.outcome] ?? r.outcome}</h2>
             <span className="text-body">freelancer {r.freelancer_pct}% · client {100 - r.freelancer_pct}%</span>
@@ -211,14 +222,24 @@ export default function DealPage() {
             </button>
           )}
 
-          {/* disputed: submit case */}
+          {/* disputed: submit case (sealed — one shot) */}
           {s === "DISPUTED" && (
             <div className="mt-4">
-              <label className="eyebrow">Your case {myCase && "· submitted (resubmit to update)"}</label>
-              <textarea value={statement || myCase} onChange={(e) => setStatement(e.target.value)} rows={4} placeholder="Explain your side, referencing the agreed terms." className="field mt-2 resize-y" />
-              <button onClick={() => run("case", () => submitCase(client, id, statement || myCase))} disabled={!(statement || myCase).trim() || !!busy} className="ink-pill mt-3">
-                {busy === "case" ? "Submitting…" : "Submit my case"}
-              </button>
+              {mySealed ? (
+                <>
+                  <label className="eyebrow">Your case · sealed</label>
+                  <p className="mt-2 text-[0.95rem] text-body whitespace-pre-wrap border-l border-hairline pl-3">{myCase}</p>
+                  <p className="mt-2 text-xs text-muted">Submitted and locked — statements are sealed so neither side can rewrite after reading the other&apos;s.</p>
+                </>
+              ) : (
+                <>
+                  <label className="eyebrow">Your case · one submission, then sealed</label>
+                  <textarea value={statement} onChange={(e) => setStatement(e.target.value)} rows={4} placeholder="Explain your side, referencing the agreed terms. You cannot edit this once submitted." className="field mt-2 resize-y" />
+                  <button onClick={() => run("case", () => submitCase(client, id, statement))} disabled={!statement.trim() || !!busy} className="ink-pill mt-3">
+                    {busy === "case" ? "Sealing…" : "Submit & seal my case"}
+                  </button>
+                </>
+              )}
             </div>
           )}
 
@@ -234,23 +255,34 @@ export default function DealPage() {
 
           {/* ruled: finalize + appeal */}
           {s === "RULED" && (
-            <div className="mt-4 flex gap-2 flex-wrap">
-              <button onClick={() => run("finalize", () => finalize(client, id))} disabled={!!busy} className="ink-pill">
-                {busy === "finalize" ? "Settling…" : "Finalize & release funds"}
-              </button>
-              {!deal.appealed && (
-                <button onClick={() => run("appeal", () => appeal(client, id))} disabled={!!busy} className="btn-outline">
-                  {busy === "appeal" ? "Re-arbitrating…" : "Appeal (one re-review)"}
+            <div className="mt-4">
+              <div className="flex gap-2 flex-wrap">
+                <button onClick={() => run("finalize", () => finalize(client, id))} disabled={!!busy || (isResolver && !deal.appealed)} className="ink-pill">
+                  {busy === "finalize" ? "Settling…" : "Finalize & release funds"}
                 </button>
+                {!deal.appealed && (
+                  <button onClick={() => run("appeal", () => appeal(client, id, bond))} disabled={!!busy || bond === 0n} className="btn-outline">
+                    {busy === "appeal" ? "Re-arbitrating…" : `Appeal · bond ${bondLabel} GEN`}
+                  </button>
+                )}
+              </div>
+              {isResolver && !deal.appealed && (
+                <p className="mt-2 text-xs text-muted">You triggered this ruling, so the other party must finalize it — that&apos;s the appeal window.</p>
+              )}
+              {!deal.appealed && (
+                <p className="mt-2 text-xs text-muted">Appeal bond ({bondLabel} GEN) returns if the re-review moves the ruling; if it&apos;s upheld the bond is paid to the other party for the delay.</p>
               )}
             </div>
           )}
 
           {/* needs review: appeal + cancel */}
           {s === "NEEDS_REVIEW" && !deal.appealed && (
-            <button onClick={() => run("appeal", () => appeal(client, id))} disabled={!!busy} className="ink-pill mt-4">
-              {busy === "appeal" ? "Re-arbitrating…" : "Appeal — ask for another review"}
-            </button>
+            <div className="mt-4">
+              <button onClick={() => run("appeal", () => appeal(client, id, bond))} disabled={!!busy || bond === 0n} className="ink-pill">
+                {busy === "appeal" ? "Re-arbitrating…" : `Appeal — ask for another review · bond ${bondLabel} GEN`}
+              </button>
+              <p className="mt-2 text-xs text-muted">Or both parties cancel below to void the deal and refund the escrow (any appeal bond returns).</p>
+            </div>
           )}
 
           {/* cancel (mutual) */}

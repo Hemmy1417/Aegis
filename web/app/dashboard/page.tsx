@@ -68,7 +68,7 @@ export default function DashboardPage() {
         <Stat label="Reputation" value={rep ? `${rep.score}` : "—"} sub={rep?.tier ?? ""} accent />
         <Stat label="Deals completed" value={rep ? `${rep.completed}` : "—"} />
         <Stat label="Disputes won" value={rep ? `${rep.dispute_wins}` : "—"} sub={rep ? `${rep.dispute_losses} lost` : ""} />
-        <Stat label="Network deals" value={stats ? `${stats.total_deals}` : "—"} sub={stats ? `${stats.total_settled} settled` : ""} />
+        <Stat label="In escrow" value={stats?.escrowed_wei ? `${genFromWei(stats.escrowed_wei)} GEN` : "—"} sub={stats ? `${stats.total_deals} deals · ${stats.total_appeals ?? 0} appeals` : ""} />
       </div>
 
       {/* role-split deals */}

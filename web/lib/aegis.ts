@@ -15,6 +15,8 @@ export type Ruling = {
   confidence: string;
 };
 
+export type RulingRound = { round: "initial" | "appeal"; ruling: Ruling };
+
 export type Deal = {
   id: string;
   client: string;
@@ -26,7 +28,12 @@ export type Deal = {
   client_case: string;
   freelancer_case: string;
   ruling: Ruling | null;
+  history?: RulingRound[];        // every arbitration round, on-chain
+  resolver?: string | null;       // who triggered resolve — cannot self-finalize
   appealed: boolean;
+  appellant?: string | null;
+  appeal_bond?: string;           // wei, held until finalize settles it
+  appeal_moved?: boolean;
   cancel_flags?: string[];
   created_seq: number;
 };
@@ -40,7 +47,15 @@ export type Reputation = {
   tier: string;
 };
 
-export type Stats = { total_deals: number; total_settled: number; total_disputed: number };
+export type Stats = {
+  total_deals: number;
+  total_settled: number;
+  total_disputed: number;
+  total_appeals?: number;
+  escrowed_wei?: string;
+  paid_out_wei?: string;
+  refunded_wei?: string;
+};
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Client = any;
@@ -81,6 +96,12 @@ async function read(functionName: string, args: unknown[] = []): Promise<string>
 export async function getStats(): Promise<Stats> {
   const raw = await read("get_stats");
   return raw ? JSON.parse(raw) : { total_deals: 0, total_settled: 0, total_disputed: 0 };
+}
+
+// The bond (wei) an appeal on this deal currently requires: 1% of escrow, min 0.01 GEN.
+export async function getAppealBond(dealId: string): Promise<bigint> {
+  const raw = await read("get_appeal_bond", [dealId]);
+  return raw ? BigInt(JSON.parse(raw).bond_wei) : 0n;
 }
 
 export async function getDeal(dealId: string): Promise<Deal | null> {
@@ -149,8 +170,9 @@ export async function submitCase(client: Client, dealId: string, statement: stri
 export async function resolve(client: Client, dealId: string): Promise<string> {
   return writeAndWait(client, "resolve", [dealId]);
 }
-export async function appeal(client: Client, dealId: string): Promise<string> {
-  return writeAndWait(client, "appeal", [dealId]);
+// appeal is payable — bondWei must cover getAppealBond's quote.
+export async function appeal(client: Client, dealId: string, bondWei: bigint): Promise<string> {
+  return writeAndWait(client, "appeal", [dealId], bondWei);
 }
 export async function finalize(client: Client, dealId: string): Promise<string> {
   return writeAndWait(client, "finalize", [dealId]);
