@@ -61,6 +61,20 @@ appeal bond followed the revised/upheld flag; an unverifiable deal that ruled UN
 and returned both escrow and appeal bond on mutual cancel; and the plain approve path. The escrow book
 closed to zero after every route.
 
+**The v0.4 windows are live-verified on-chain** (two-wallet MetaMask run against the deployed
+contract): raising a dispute stamped a real response window and `resolve` on a single filed case was
+**refused with a live countdown** while it was open; after the fetched clock proved the window had
+elapsed, the same call ruled **one-sided**, weighing the silent party's default against them — the
+freeze a no-show could once cause is gone. On a ruled deal, a **second wallet's** immediate
+`finalize` was **refused with the appeal-window countdown** (the exact snipe the old action-based
+guard allowed), the appeal path stayed open through the window, and finalization settled the escrow
+per the ruling once the window provably passed. Beyond the on-chain run, 8 adversarial direct-mode
+probes attack the window seams: exact `now == deadline` boundaries on both windows, a fast clock
+source unable to shorten a window (the contract takes the *earliest* corroborated reading), source
+divergence failing closed even when time had truly elapsed, a dispute raised during a clock outage
+never freeing the escrow one-sided while a genuine two-sided resolve still worked, a late-but-real
+response heard as two-sided, and the arm-on-outage finalize sequence (arms → holds → releases).
+
 ## Project summary
 Freelance escrow needs someone to judge *"did they deliver what was agreed?"* — today that's a
 centralized platform or a lawyer taking a cut. Aegis makes the arbiter an **AI-validator panel** on
