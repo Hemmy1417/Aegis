@@ -535,3 +535,125 @@ def test_clock_sources_are_the_proven_pair(module):
         "https://cloudflare.com/cdn-cgi/trace",
         "https://eth.blockscout.com/api/v2/main-page/blocks",
     ]
+
+
+# ── v0.4 ADVERSARIAL STRESS: the window edges the happy-path tests skip ──────
+# Each probe attacks one seam: the exact boundary, a lying/fast clock trying to
+# shorten a window, an outage at the wrong moment, and the arm-on-outage path.
+
+def _dispute_one_case(module, contract):
+    """CREATE → dispute → only the client files. Returns (deal_id, respond_by)."""
+    did = _mk(module, contract)
+    _as(module, CLIENT, 0); contract.dispute(did)
+    _as(module, CLIENT, 0); contract.submit_case(did, "only my side is on file")
+    return did, json.loads(contract.get_deal(did))["respond_by_epoch"]
+
+
+def test_response_window_boundary_now_equals_deadline_is_allowed(module, contract):
+    # exactly AT the deadline the window is over (guard is `now < deadline`) — an
+    # off-by-one here would either strand the escrow a second longer or leak early
+    did, respond_by = _dispute_one_case(module, contract)
+    _NOW[0] = respond_by                                   # precisely the deadline
+    _prime(module, "REFUND", 0)
+    _as(module, OTHER, 0)
+    d = json.loads(contract.resolve(did))
+    assert d["status"] == "RULED" and d["resolved_one_sided"] is True
+    assert module.NO_CASE in module.gl.eq_principle.last_input   # default was weighed
+
+
+def test_response_window_fast_source_cannot_shorten_it(module, contract):
+    # a sniper points one clock source AHEAD (within tolerance) to fake elapsed
+    # time; _utc_now takes min() of the sources, so the honest one still holds the
+    # window shut — real minutes can't be manufactured with a fast source
+    did, respond_by = _dispute_one_case(module, contract)
+    _NOW[0] = respond_by - 100                             # genuinely still open
+    _SKEW["cloudflare"] = 200                              # <300 → tolerated, not divergence
+    _prime(module, "REFUND", 0)
+    _as(module, OTHER, 0)
+    with pytest.raises(module.gl.vm.UserError, match="response window still open"):
+        contract.resolve(did)
+
+
+def test_response_window_divergence_fails_closed_even_when_elapsed(module, contract):
+    # real time IS past the deadline, but the two sources disagree by >300s, so the
+    # clock is untrusted → one-sided ruling refused (fail closed, never fail open)
+    did, respond_by = _dispute_one_case(module, contract)
+    _NOW[0] = respond_by + 100                             # truly elapsed
+    _SKEW["blockscout"] = 9999                             # sources diverge → distrust
+    _as(module, OTHER, 0)
+    with pytest.raises(module.gl.vm.UserError, match="no trusted clock right now"):
+        contract.resolve(did)
+
+
+def test_dispute_during_outage_never_frees_escrow_one_sided(module, contract):
+    # clock down at dispute → respond_by stamped 0 → the one-sided unfreeze path is
+    # permanently unavailable for this deal (fail closed), but a genuine two-sided
+    # resolve is unaffected: an outage can't strip the response right OR trap funds
+    did = _mk(module, contract)
+    _SKEW["blockscout"] = 9999                             # clock untrusted during dispute
+    _as(module, CLIENT, 0); contract.dispute(did)
+    _SKEW.clear()
+    assert json.loads(contract.get_deal(did))["respond_by_epoch"] == 0
+    _as(module, CLIENT, 0); contract.submit_case(did, "only my side")
+    _NOW[0] += module.RESPONSE_WINDOW_SECONDS + 10_000     # lots of real time passes
+    _as(module, OTHER, 0)
+    with pytest.raises(module.gl.vm.UserError, match="no trusted clock right now"):
+        contract.resolve(did)                             # one-sided still refused
+    _as(module, FREELANCER, 0); contract.submit_case(did, "my side too")   # genuine response
+    _prime(module, "SPLIT", 50)
+    _as(module, OTHER, 0)
+    assert json.loads(contract.resolve(did))["status"] == "RULED"          # both-sided works
+
+
+def test_late_genuine_response_is_heard_as_two_sided(module, contract):
+    # the counterparty files AFTER the window lapsed but BEFORE resolve — the case
+    # is still on file, so resolve rules two-sided (never one-sided) — the window is
+    # a floor for one-sided rulings, not a gag on a late-but-real response
+    did, respond_by = _dispute_one_case(module, contract)
+    _NOW[0] = respond_by + 5                               # window lapsed…
+    _as(module, FREELANCER, 0); contract.submit_case(did, "my side, filed late")
+    _prime(module, "SPLIT", 50)
+    _as(module, OTHER, 0)
+    d = json.loads(contract.resolve(did))
+    assert d["status"] == "RULED" and d["resolved_one_sided"] is False
+
+
+def test_appeal_window_boundary_now_equals_deadline_is_allowed(module, contract):
+    did = _to_ruled(module, contract, "RELEASE", 100, past_window=False)
+    d = json.loads(contract.get_deal(did))
+    _NOW[0] = d["appeal_open_until_epoch"]                 # precisely the deadline
+    _as(module, CLIENT, 0)
+    assert json.loads(contract.finalize(did))["status"] == "SETTLED"
+
+
+def test_appeal_still_allowed_after_window_if_not_finalized(module, contract):
+    # the window gates FINALIZE, not the appeal itself: a slow loser can still appeal
+    # as long as nobody has finalized (fail-open toward the appellant)
+    did = _to_ruled(module, contract, "RELEASE", 100, past_window=True)   # window elapsed
+    _prime(module, "SPLIT", 50)                           # the appeal moves the ruling
+    _as(module, CLIENT, BOND)
+    d = json.loads(contract.appeal(did))
+    assert d["appealed"] is True
+
+
+def test_appeal_window_arm_on_outage_full_sequence(module, contract):
+    # resolve during a clock outage stamps deadline 0; finalize must ARM the window
+    # on first attempt (not settle), hold through it, then release — an outage can
+    # only LENGTHEN the window, never skip it
+    did = _to_disputed(module, contract)                  # both cases in
+    _prime(module, "RELEASE", 100)
+    _SKEW["blockscout"] = 9999                             # clock down as resolve stamps
+    _as(module, OTHER, 0); contract.resolve(did)
+    _SKEW.clear()
+    assert json.loads(contract.get_deal(did))["appeal_open_until_epoch"] == 0   # armed on outage
+    _as(module, CLIENT, 0)                                 # non-resolver finalizes
+    with pytest.raises(module.gl.vm.UserError, match="appeal window armed"):
+        contract.finalize(did)                            # 1st: arms, does NOT settle
+    armed = json.loads(contract.get_deal(did))["appeal_open_until_epoch"]
+    assert armed == _NOW[0] + module.APPEAL_WINDOW_SECONDS
+    with pytest.raises(module.gl.vm.UserError, match="appeal window still open"):
+        contract.finalize(did)                            # 2nd: still inside window
+    _NOW[0] += module.APPEAL_WINDOW_SECONDS + 1
+    _as(module, CLIENT, 0)
+    assert json.loads(contract.finalize(did))["status"] == "SETTLED"   # 3rd: released
+    assert module.gl._emit.total_to(FREELANCER) == AMOUNT

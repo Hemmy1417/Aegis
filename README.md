@@ -5,7 +5,7 @@
 
 **Status:** 🟢 **Built and validated on Studionet — Phase 4 (judge-feedback) hardened.** The
 Intelligent Contract (escrow + marketplace + AI arbitration + **enforced response & appeal windows** +
-bonded appeals + reputation) is deployed with 28 direct-mode tests. The Next.js frontend is complete.
+bonded appeals + reputation) is deployed with 36 direct-mode tests. The Next.js frontend is complete.
 
 ## Live demo
 **https://aegis-safu.vercel.app** — live on Vercel, reading the contract on Studionet.
