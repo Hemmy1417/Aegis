@@ -1,172 +1,233 @@
-# Aegis — AI-arbitrated freelance escrow on GenLayer
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Hemmy1417/Aegis/main/web/app/icon.svg" alt="Aegis" width="140" />
+</p>
 
-> Lock payment for a job in escrow. If there's a dispute, an AI-validator panel reads the agreed
-> terms and both sides' cases and rules how the money splits — trustlessly, on-chain.
+# Aegis - AI-Arbitrated Freelance Escrow
 
-**Status:** 🟢 **Built and validated on Studionet — Phase 4 (judge-feedback) hardened.** The
-Intelligent Contract (escrow + marketplace + AI arbitration + **enforced response & appeal windows** +
-bonded appeals + reputation) is deployed with 36 direct-mode tests. The Next.js frontend is complete.
+**Trustless freelance payments, judged by AI-validator consensus on GenLayer.**
 
-## Live demo
-**https://aegis-safu.vercel.app** — live on Vercel, reading the contract on Studionet.
+A client locks payment for a job in escrow. If the work is disputed, an AI-validator panel reads the
+agreed terms and both parties' sealed cases, fetches the deliverable, and rules how the money splits -
+the contract settles the escrow by that ruling, on-chain, with no platform in the middle.
 
-## Contract details
-| Field | Value |
-|---|---|
-| Network | **Studionet** |
-| RPC | `https://studio.genlayer.com/api` |
-| Chain ID | `61999` |
-| Contract address | `0xe534039b6BD020e6605371ABF8378dC00f634ad9` |
-| Explorer | https://explorer-studio.genlayer.com (`/tx/<hash>`) |
+Live app: **https://aegis-safu.vercel.app**
 
-> **GenVM lessons baked in (July 2026).** Wallet payouts go through an empty
-> `@gl.evm.contract_interface` proxy (`emit_transfer(on="finalized")` — a GenVM call at a plain
-> wallet strands the value). An `Address`-typed field is never re-wrapped.
+## What it is
 
-## Phase 4 — judge-feedback hardening (why this isn't a demo)
-
-The arbitration decides where real money goes, so every input and lever it touches is now
-tamper-resistant:
-
-- **Sealed cases.** Each party's statement is immutable once submitted — no reading the opponent's
-  brief and rewriting yours. The last-mover advantage is gone.
-- **Enforced response window (real wall-clock).** Raising a dispute stamps a hard deadline: the
-  contract fetches the current UTC time under validator consensus — from two probe-verified sources,
-  Cloudflare's edge clock and Ethereum's own latest block timestamp — and gives the other party a
-  10-minute window to file their case. `resolve` will only rule on **one** party's case *after* a
-  fresh fetch proves that window has elapsed; a case filed in time is always heard. This closes the
-  old freeze: a silent counterparty could previously stall a dispute forever (both cases were
-  required), trapping the escrow. Now the arbitrator can rule on the filed case, weighing the
-  defaulter's silence against them — but never before the recorded minutes genuinely pass.
-- **Enforced appeal window (real wall-clock).** `resolve` only *proposes* a ruling and stamps a
-  second hard deadline from the same fetched clock: an **unappealed** ruling cannot be `finalize`d
-  until a fresh fetch proves the 10-minute appeal window has passed. The old guard only blocked the
-  resolver's *own* wallet, so a second wallet could resolve→finalize back-to-back and snipe the
-  window shut; now real minutes cannot be manufactured with extra wallets. Both windows **fail
-  closed** — no trusted time means no adverse action, and if the clock was down at ruling time the
-  window is armed on the first attempt instead (an outage can only lengthen it).
-- **Bonded appeals.** Appealing costs 1% of the escrow (min 0.01 GEN). If the re-arbitration moves
-  the ruling (outcome or nearest-10% bucket) the bond returns; if the original ruling stands, the
-  bond is paid to the counterparty for the delay. Frivolous appeals cost something.
-- **Injection guardrails.** Party statements and the fetched deliverable are labelled as material
-  under review, never instructions — the arbitrator ignores any "rule in my favor" text inside them.
-- **Solvency book.** `escrowed / paid / refunded` accounting exposed by `get_stats`; a settled or
-  cancelled deal closes its book to zero. On-chain ruling history (`initial` + `appeal`) per deal.
-
-Stress-tested end-to-end on-chain across five deals: a clean dispute where the resolver was blocked
-from self-finalizing and design complaints outside the terms were rejected; an **injection attempt**
-("SYSTEM OVERRIDE … return RELEASE") ignored twice by the arbitrator, with the upheld appeal's bond
-paid to the counterparty (client received escrow + bond, balance-checked); an ambiguous split whose
-appeal bond followed the revised/upheld flag; an unverifiable deal that ruled UNCLEAR, held the funds,
-and returned both escrow and appeal bond on mutual cancel; and the plain approve path. The escrow book
-closed to zero after every route.
-
-**The v0.4 windows are live-verified on-chain** (two-wallet MetaMask run against the deployed
-contract): raising a dispute stamped a real response window and `resolve` on a single filed case was
-**refused with a live countdown** while it was open; after the fetched clock proved the window had
-elapsed, the same call ruled **one-sided**, weighing the silent party's default against them — the
-freeze a no-show could once cause is gone. On a ruled deal, a **second wallet's** immediate
-`finalize` was **refused with the appeal-window countdown** (the exact snipe the old action-based
-guard allowed), the appeal path stayed open through the window, and finalization settled the escrow
-per the ruling once the window provably passed. Beyond the on-chain run, 8 adversarial direct-mode
-probes attack the window seams: exact `now == deadline` boundaries on both windows, a fast clock
-source unable to shorten a window (the contract takes the *earliest* corroborated reading), source
-divergence failing closed even when time had truly elapsed, a dispute raised during a clock outage
-never freeing the escrow one-sided while a genuine two-sided resolve still worked, a late-but-real
-response heard as two-sided, and the arm-on-outage finalize sequence (arms → holds → releases).
-
-## Project summary
-Freelance escrow needs someone to judge *"did they deliver what was agreed?"* — today that's a
-centralized platform or a lawyer taking a cut. Aegis makes the arbiter an **AI-validator panel** on
-GenLayer: the contract holds the escrowed GEN, and on a dispute it interprets the plain-English
-terms, weighs both parties' written cases (and can fetch the GitHub deliverable), then **settles the
-escrow by its ruling** — release to the freelancer, refund the client, or a percentage split.
-
-**GenLayer advantage:** a dispute ruling needs AI judgement of natural-language terms + evidence
-*and* a binding on-chain settlement of real funds. A normal contract can't judge; a normal backend
-can't settle trustlessly. Aegis does both in one place.
-
-## What makes it stand out
-- **Money moves on the AI's verdict** — release / refund / split, paid out by the contract.
-- **Confidence gate** — genuinely ambiguous cases park in `NEEDS_REVIEW` instead of a bad payout.
-- **Appeal** — the losing side gets one independent re-arbitration before funds move
-  (`resolve` rules → `finalize` pays, with an appeal window in between).
-- **GitHub deliverable check** — the arbitrator can fetch + judge the actual submitted work.
-- **Fairness reputation** — on-chain score that tracks dispute *wins/losses*, not just activity.
-- **A real marketplace** — clients post open jobs, freelancers browse and **claim** them.
-- **Locked spec** — terms are immutable on-chain; each deal shows a verifiable keccak fingerprint so
-  both parties confirm they're judged against the same spec.
+- **Money moves on the AI's verdict** - release, refund, or split, paid out by the contract itself.
+- **Enforced windows, real wall-clock** - the response and appeal windows are measured against UTC
+  the contract fetches under validator consensus; no wallet can snipe them shut.
+- **Sealed cases** - each party's statement is immutable once submitted, so nobody reads the
+  opponent's brief and rewrites theirs.
+- **Bonded appeals** - one re-arbitration per deal, costing 1% of the escrow; frivolous appeals pay
+  the counterparty for the delay.
+- **A real marketplace** - clients post open jobs with the escrow already locked; freelancers browse
+  and claim them.
 
 ## How it works
-1. **Post** — a client funds a job into escrow, either open to the board or assigned to an address.
-2. **Claim** — a freelancer claims an open job (the escrow is already locked).
-3. **Deliver** — the freelancer submits the work (optionally a GitHub URL).
-4. **Settle the easy way** — the client approves → escrow released to the freelancer.
-5. **Or dispute** — either party disputes (starting a **fetched-clock response window**) → both submit
-   a written case (**sealed once submitted**) → `resolve` runs the AI panel to consensus → a ruling
-   (`RELEASE` / `REFUND` / `SPLIT` / `UNCLEAR`). If one side stays silent past the response window,
-   the panel rules on the filed case and weighs the default against the no-show.
-6. **Finalize** — `resolve` stamps a **fetched-clock appeal window**; the losing side may appeal once
-   (**bonded**) before it elapses, and an unappealed ruling can't be finalized (by anyone) until the
-   window provably passes. Then the contract splits the escrow per the ruling. Ambiguous rulings hold
-   the funds in `NEEDS_REVIEW`.
+
+### For clients
+1. Post a job with plain-English terms - the escrow funds on creation, open to the board or assigned.
+2. Review the delivered work.
+3. Approve to release payment instantly, or dispute.
+4. In a dispute, submit your sealed case; the arbitrator rules and the contract settles.
+5. Build an on-chain reputation from fairly-settled deals.
+
+### For freelancers
+1. Browse open jobs - the money is already escrowed before you start.
+2. Claim a job and deliver the work (optionally a URL the arbitrator can fetch).
+3. Get paid on approval, or dispute if the client won't settle.
+4. In a dispute, submit your sealed case within the enforced response window.
+5. The losing side may appeal once (bonded) before funds move.
+
+## Rulings
+
+The arbitration panel returns a structured ruling; the contract settles deterministically from it.
+
+| Outcome | Meaning |
+|---|---|
+| `RELEASE` | The work meets the terms - the freelancer is paid in full. |
+| `REFUND` | The work clearly fails the terms - the client is refunded. |
+| `SPLIT` | Both sides have partial merit - the escrow splits by `freelancer_pct`. |
+| `UNCLEAR` | The evidence cannot support a ruling - funds are **held**, never guessed into a payout. |
+
+A ruling below the confidence floor parks the deal in `NEEDS_REVIEW` instead of paying out; the
+parties can appeal or mutually cancel (full refund, bond returned).
+
+## Enforced windows (real wall-clock)
+
+GenVM has no native clock, so the contract fetches UTC under validator consensus from two
+probe-verified sources - Cloudflare's edge clock and Ethereum's latest block timestamp - and takes
+the earliest corroborated reading, so skew can only lengthen a window, never shorten one.
+
+| Window | Stamped by | Enforced by | Effect |
+|---|---|---|---|
+| Response (10 min) | `dispute` | `resolve` | A one-sided ruling is refused until a fresh fetch proves the silent party's window elapsed. A case filed in time is always heard. A no-show can no longer freeze the escrow. |
+| Appeal (10 min) | `resolve` | `finalize` | An unappealed ruling cannot be finalized by **any** wallet until a fresh fetch proves the window passed. Real minutes cannot be manufactured with extra wallets. |
+
+Both windows **fail closed**: no trusted time means no adverse action. If the clock was down when a
+window should have been stamped, it is armed on the first later attempt - an outage can only
+lengthen a window.
+
+## Deal lifecycle
+
+```text
+OPEN -> CREATED -> DELIVERED -> SETTLED                      (client approves)
+            \          |
+             \      DISPUTED -> RULED -> SETTLED             (resolve -> finalize)
+              \        |            \
+               \       |             -> NEEDS_REVIEW         (UNCLEAR / low confidence)
+                -> CANCELLED                                 (mutual cancel, full refund)
+```
+
+| Status | What happens |
+|---|---|
+| `OPEN` | Job posted to the board, escrow locked, no freelancer yet. |
+| `CREATED` | Freelancer assigned or job claimed - work in progress. |
+| `DELIVERED` | Work submitted, awaiting the client's review. |
+| `DISPUTED` | Either party disputed; the response window is running; cases are sealed on submission. |
+| `RULED` | The panel proposed a ruling; the appeal window is running; no payout yet. |
+| `NEEDS_REVIEW` | The ruling was `UNCLEAR` or low-confidence - funds held; appeal or cancel. |
+| `SETTLED` | Escrow paid out per approval or ruling; the deal's book closes to zero. |
+| `CANCELLED` | Withdrawn (open job) or mutually cancelled - escrow refunded, any bond returned. |
+
+## GenLayer consensus functions
+
+| Function | Kind | What runs under consensus |
+|---|---|---|
+| `resolve` | write | The panel reads terms + both sealed cases (a defaulted party is passed as an explicit no-response marker), fetches the deliverable URL, and agrees on a ruling via `gl.eq_principle.prompt_comparative`. |
+| `appeal` | write, payable | An independent, more rigorous re-arbitration of the same evidence; equivalence keyed on outcome + nearest-10% bucket. |
+| `_utc_now` | internal | Both clock sources fetched and cross-checked (divergence > 300 s distrusts the reading); validators agree the epoch within tolerance. |
+
+Everything else - settlement math, window guards, bond accounting, reputation - is deterministic
+contract code that runs identically on every validator.
+
+## Contract
+
+| Field | Value |
+|---|---|
+| Network | GenLayer Studionet |
+| Chain ID | `61999` |
+| RPC | `https://studio.genlayer.com/api` |
+| Explorer | `https://explorer-studio.genlayer.com` |
+| Contract address | [`0xe534039b6BD020e6605371ABF8378dC00f634ad9`](https://studio.genlayer.com/?import-contract=0xe534039b6BD020e6605371ABF8378dC00f634ad9) |
+| Source | `contracts/aegis.py` |
+
+### Write methods
+
+| Method | Who | Payable | Notes |
+|---|---|---|---|
+| `create_deal(freelancer, terms)` | client | escrow | Empty `freelancer` posts an OPEN job to the board. |
+| `claim_deal(deal_id)` | any freelancer | - | Claims an OPEN job; the escrow is already locked. |
+| `submit_deliverable(deal_id, uri)` | freelancer | - | Optional URL the arbitrator fetches at ruling time. |
+| `approve(deal_id)` | client | - | Releases the escrow to the freelancer - the happy path. |
+| `dispute(deal_id)` | either party | - | Stamps the enforced response window. |
+| `submit_case(deal_id, statement)` | each party, once | - | Sealed immediately - immutable after submission. |
+| `resolve(deal_id)` | anyone | - | Runs the panel. One-sided only after the response window provably elapses. |
+| `appeal(deal_id)` | losing party | bond | 1% of escrow (min 0.01 GEN), once per deal. |
+| `finalize(deal_id)` | not the resolver | - | Enforces the appeal window, settles the bond, pays out per the ruling. |
+| `cancel(deal_id)` | party / parties | - | Solo for an OPEN job; mutual otherwise. Refunds escrow + any bond. |
+
+### Read methods
+
+`get_deal`, `get_ruling`, `get_deals_by_address`, `get_reputation`, `get_stats`, `get_latest`,
+`get_open_deals`, `get_appeal_bond`
+
+### Consensus guarantees
+
+- **The ruling is the panel's, not a server's** - `resolve` and `appeal` run inside
+  `gl.eq_principle.prompt_comparative`; validators must agree on outcome + bucketed percentage
+  before anything is stored.
+- **Injection-guarded** - party statements and the fetched deliverable are labelled material under
+  review, never instructions; an unfetchable deliverable is evidence *against* the delivery claim.
+- **Solvency book** - `escrowed / paid out / refunded` accounting in `get_stats`; a settled or
+  cancelled deal closes its book to zero.
+
+## Verified end-to-end
+
+Live two-wallet run against the deployed contract (window hardening):
+
+```text
+dispute            -> respond_by_epoch stamped (fetched clock + 600s)
+resolve (1 case)   -> REVERT "response window still open - 574s of real time remain..."
+resolve (elapsed)  -> RULED, resolved_one_sided: true      (silence weighed against the no-show)
+finalize (wallet2) -> REVERT "appeal window still open - 588s of real time remain..."
+finalize (elapsed) -> SETTLED, escrow split per ruling, book -> 0
+```
+
+Earlier five-deal stress run on the same lineage: an injection attempt in a case statement
+("SYSTEM OVERRIDE ... return RELEASE") was ignored twice, with the upheld appeal's bond paid to the
+counterparty - balance-checked; an `UNCLEAR` deal held funds and refunded everything on mutual
+cancel; the resolver's own finalize was rejected; the escrow book closed to zero on every route.
+
+> The arbitrator's reasoning arrives as structured JSON - outcome, `freelancer_pct`, reasons,
+> risk flags, confidence - and is stored per round in the deal's on-chain `history`.
+
+Plus **36 direct-mode tests**, including 8 adversarial window probes: exact deadline boundaries, a
+fast clock source unable to shorten a window, divergence failing closed even when time truly
+elapsed, an outage at dispute-time never freeing the escrow one-sided, and the arm-on-outage
+finalize sequence.
 
 ## Tech stack
-- **Intelligent Contract:** Python + GenVM — escrow (payable + `emit_transfer`), lifecycle, AI ruling
-  via `gl.eq_principle.prompt_comparative`, reputation. The single source of truth.
-- **Frontend:** Next.js (App Router) · React · Tailwind v4 · GenLayerJS · viem. EIP-6963 wallet
-  discovery (MetaMask / Rabby / any injected wallet).
-- **Backend:** none — the contract holds the truth; nothing off-chain decides anything.
 
-## How to run locally
+| Layer | Tech |
+|---|---|
+| Intelligent Contract | Python on GenVM (escrow, marketplace, arbitration, reputation) |
+| Consensus | `gl.eq_principle.prompt_comparative` + nondet web fetches |
+| Frontend | Next.js (App Router), React, Tailwind v4 |
+| Web3 | GenLayerJS, viem, EIP-6963 injected wallets (MetaMask / Rabby) |
+| Backend | None - the contract is the source of truth |
+
+## Repository
+
+```text
+contracts/aegis.py          The Intelligent Contract (v0.4, deployed)
+tests/direct/test_aegis.py  36 direct-mode tests, pytest
+web/                        Next.js frontend (board, deal room, dashboard, profiles, ledger)
+docs/                       PRD, TRD, SDLC, schemas
+```
+
+## Getting started
+
 ```bash
+# contract tests
+python -m pytest tests/direct -q
+
+# frontend
 cd web
 npm install
-cp .env.example .env.local      # contract address is prefilled for Studionet
-npm run dev                     # http://localhost:3000
+cp .env.example .env.local     # contract address prefilled for Studionet
+npm run dev                    # http://localhost:3000
 ```
-The contract source is `contracts/aegis.py` (deploy / interact via GenLayer Studio).
 
-## Testing
 ```bash
-cd web
-npm test
-```
-Unit tests cover the escrow money-math (exact GEN↔wei, 18-decimal truncation, edge cases), the spec
-fingerprint, and full deal-status / ruling-outcome coverage.
-
-## Demo evidence (validated on-chain)
-A real dispute run through the deployed contract: a "10 product photos, only 5 delivered" job →
-both parties submitted cases → the AI ruled **`SPLIT`, freelancer 50%, HIGH confidence** → an appeal
-re-affirmed it → `finalize` split the 2 GEN escrow 1:1. Reputation updated with the dispute
-win/loss. An earlier ambiguous case correctly returned `UNCLEAR` and **held the funds** rather than
-guessing.
-
-## Honest boundaries
-- **The windows are real time, fetched.** GenVM has no native clock, so the contract fetches UTC
-  under consensus (Cloudflare + Ethereum block time) to enforce both the response and appeal windows.
-  This is as trustless as those two independent, probe-verified sources — both would have to be wrong
-  in the same direction at the same moment to shift a deadline, and the clock never *shortens* a
-  window: an outage degrades to "no adverse action" (fail-closed), it never lets a party act early.
-- **A no-show no longer freezes the escrow.** Both cases are still preferred, but a silent
-  counterparty can no longer trap the funds — after the enforced response window the arbitrator rules
-  on the filed case (mutual `cancel` remains available too).
-- **AI/web variance.** Judgement depends on the LLM and, for GitHub checks, on the page being
-  fetchable; unclear cases return `UNCLEAR` and hold the escrow rather than passing.
-
-## Roadmap
-- **Phase 5:** a notifications/indexer layer (watch contract events → email/push so parties know when
-  to act) — a cache that notifies, never decides. Plus a demo video + screenshots.
-- Job categories + board filtering; multi-milestone deals.
-- **Credence tie-in** — gate jobs behind a
-  [Credence](https://github.com/Hemmy1417/Credence)-verified identity (sibling project).
-
-## Repo layout
-```
-docs/        PRD.md TRD.md SDLC.md SCHEMAS.md
-contracts/   aegis.py            (the deployed Intelligent Contract)
-web/         Next.js + GenLayerJS frontend (marketplace, deal lifecycle, profiles, resolved ledger)
+# frontend unit tests (money-math, spec fingerprint, status maps)
+cd web && npm test
 ```
 
-_Sibling project:_ [Credence](https://github.com/Hemmy1417/Credence) — on-chain identity
-verification; Aegis can consume Credence-verified identities.
+## Security
+
+- Case statements are sealed on submission; the last-mover advantage does not exist.
+- The response and appeal windows are enforced against consensus-fetched UTC and fail closed - an
+  outage can only lengthen a window, never shorten or skip one.
+- Fetched text (cases, deliverable) is material under review, never instructions to the arbitrator.
+- Appeals are bonded; re-rolling consensus is never a free dice-roll.
+- Wallet payouts go through an empty `@gl.evm.contract_interface` proxy - `emit_transfer` at a plain
+  wallet address strands the value (proven empirically, fixed across all sibling contracts).
+- Terms are immutable on-chain; every deal shows a keccak fingerprint of the locked spec.
+
+## Design notes
+
+- The clock is as trustless as its two independent sources; both would have to lie in the same
+  direction at the same moment to shift a deadline. The contract takes the earliest corroborated
+  reading, so real skew favours the responding party.
+- Deliverable quality judgement depends on the page being anonymously fetchable; unclear evidence
+  rules `UNCLEAR` and holds funds rather than guessing.
+- `genlayer write` has no value flag, so payable flows (escrow, bonds) are exercised through the
+  frontend with a real wallet.
+- Reputation counts dispute wins and losses, not raw activity - it prices fairness, not volume.
+
+## Disclaimer
+
+Aegis is a hackathon project on a test network. The escrowed GEN is testnet currency; do not use
+the contract for real payments without an audit.
