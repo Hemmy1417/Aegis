@@ -3,9 +3,9 @@
 > Lock payment for a job in escrow. If there's a dispute, an AI-validator panel reads the agreed
 > terms and both sides' cases and rules how the money splits — trustlessly, on-chain.
 
-**Status:** 🟢 **Built and validated on Studionet — Phase 3 benchmark-hardened.** The Intelligent
-Contract (escrow + marketplace + AI arbitration + bonded appeals + reputation) is deployed with 21
-direct-mode tests. The Next.js frontend is complete.
+**Status:** 🟢 **Built and validated on Studionet — Phase 4 (judge-feedback) hardened.** The
+Intelligent Contract (escrow + marketplace + AI arbitration + **enforced response & appeal windows** +
+bonded appeals + reputation) is deployed with 28 direct-mode tests. The Next.js frontend is complete.
 
 ## Live demo
 **https://aegis-safu.vercel.app** — live on Vercel, reading the contract on Studionet.
@@ -16,23 +16,35 @@ direct-mode tests. The Next.js frontend is complete.
 | Network | **Studionet** |
 | RPC | `https://studio.genlayer.com/api` |
 | Chain ID | `61999` |
-| Contract address | `0xE385AC18495B00d7172Cb10EFd6fEb551a26DC48` |
+| Contract address | `0xe534039b6BD020e6605371ABF8378dC00f634ad9` |
 | Explorer | https://explorer-studio.genlayer.com (`/tx/<hash>`) |
 
 > **GenVM lessons baked in (July 2026).** Wallet payouts go through an empty
 > `@gl.evm.contract_interface` proxy (`emit_transfer(on="finalized")` — a GenVM call at a plain
 > wallet strands the value). An `Address`-typed field is never re-wrapped.
 
-## Phase 3 — benchmark hardening (why this isn't a demo)
+## Phase 4 — judge-feedback hardening (why this isn't a demo)
 
 The arbitration decides where real money goes, so every input and lever it touches is now
 tamper-resistant:
 
 - **Sealed cases.** Each party's statement is immutable once submitted — no reading the opponent's
   brief and rewriting yours. The last-mover advantage is gone.
-- **A real appeal window.** `resolve` only *proposes*; the wallet that triggered it **cannot also
-  finalize the unappealed ruling**, so the favored side can't rule-and-collect in one breath. (Same
-  guard validated on-chain in the sibling prediction-market contract.)
+- **Enforced response window (real wall-clock).** Raising a dispute stamps a hard deadline: the
+  contract fetches the current UTC time under validator consensus — from two probe-verified sources,
+  Cloudflare's edge clock and Ethereum's own latest block timestamp — and gives the other party a
+  10-minute window to file their case. `resolve` will only rule on **one** party's case *after* a
+  fresh fetch proves that window has elapsed; a case filed in time is always heard. This closes the
+  old freeze: a silent counterparty could previously stall a dispute forever (both cases were
+  required), trapping the escrow. Now the arbitrator can rule on the filed case, weighing the
+  defaulter's silence against them — but never before the recorded minutes genuinely pass.
+- **Enforced appeal window (real wall-clock).** `resolve` only *proposes* a ruling and stamps a
+  second hard deadline from the same fetched clock: an **unappealed** ruling cannot be `finalize`d
+  until a fresh fetch proves the 10-minute appeal window has passed. The old guard only blocked the
+  resolver's *own* wallet, so a second wallet could resolve→finalize back-to-back and snipe the
+  window shut; now real minutes cannot be manufactured with extra wallets. Both windows **fail
+  closed** — no trusted time means no adverse action, and if the clock was down at ruling time the
+  window is armed on the first attempt instead (an outage can only lengthen it).
 - **Bonded appeals.** Appealing costs 1% of the escrow (min 0.01 GEN). If the re-arbitration moves
   the ruling (outcome or nearest-10% bucket) the bond returns; if the original ruling stands, the
   bond is paid to the counterparty for the delay. Frivolous appeals cost something.
@@ -76,10 +88,13 @@ can't settle trustlessly. Aegis does both in one place.
 2. **Claim** — a freelancer claims an open job (the escrow is already locked).
 3. **Deliver** — the freelancer submits the work (optionally a GitHub URL).
 4. **Settle the easy way** — the client approves → escrow released to the freelancer.
-5. **Or dispute** — either party disputes → both submit a written case (**sealed once submitted**) →
-   `resolve` runs the AI panel to consensus → a ruling (`RELEASE` / `REFUND` / `SPLIT` / `UNCLEAR`).
-6. **Finalize** — the losing side may appeal once (**bonded**); the resolver can't self-finalize, so a
-   different wallet finalizes and the contract splits the escrow per the ruling. Ambiguous rulings hold
+5. **Or dispute** — either party disputes (starting a **fetched-clock response window**) → both submit
+   a written case (**sealed once submitted**) → `resolve` runs the AI panel to consensus → a ruling
+   (`RELEASE` / `REFUND` / `SPLIT` / `UNCLEAR`). If one side stays silent past the response window,
+   the panel rules on the filed case and weighs the default against the no-show.
+6. **Finalize** — `resolve` stamps a **fetched-clock appeal window**; the losing side may appeal once
+   (**bonded**) before it elapses, and an unappealed ruling can't be finalized (by anyone) until the
+   window provably passes. Then the contract splits the escrow per the ruling. Ambiguous rulings hold
    the funds in `NEEDS_REVIEW`.
 
 ## Tech stack
@@ -113,18 +128,22 @@ re-affirmed it → `finalize` split the 2 GEN escrow 1:1. Reputation updated wit
 win/loss. An earlier ambiguous case correctly returned `UNCLEAR` and **held the funds** rather than
 guessing.
 
-## Known limitations
-- **Both parties must submit a case** before `resolve` runs; a no-show currently stalls a dispute
-  (mutual `cancel` is the escape hatch). A submission deadline is future work.
-- **Time-of-check.** The ruling reflects the evidence at resolution; there's no on-chain timestamp
-  (GenVM has no wall-clock), so "verified X ago" isn't shown.
+## Honest boundaries
+- **The windows are real time, fetched.** GenVM has no native clock, so the contract fetches UTC
+  under consensus (Cloudflare + Ethereum block time) to enforce both the response and appeal windows.
+  This is as trustless as those two independent, probe-verified sources — both would have to be wrong
+  in the same direction at the same moment to shift a deadline, and the clock never *shortens* a
+  window: an outage degrades to "no adverse action" (fail-closed), it never lets a party act early.
+- **A no-show no longer freezes the escrow.** Both cases are still preferred, but a silent
+  counterparty can no longer trap the funds — after the enforced response window the arbitrator rules
+  on the filed case (mutual `cancel` remains available too).
 - **AI/web variance.** Judgement depends on the LLM and, for GitHub checks, on the page being
   fetchable; unclear cases return `UNCLEAR` and hold the escrow rather than passing.
 
 ## Roadmap
 - **Phase 5:** a notifications/indexer layer (watch contract events → email/push so parties know when
   to act) — a cache that notifies, never decides. Plus a demo video + screenshots.
-- Job categories + board filtering; submission deadlines; multi-milestone deals.
+- Job categories + board filtering; multi-milestone deals.
 - **Credence tie-in** — gate jobs behind a
   [Credence](https://github.com/Hemmy1417/Credence)-verified identity (sibling project).
 

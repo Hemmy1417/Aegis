@@ -86,9 +86,24 @@ class _Evm:
         return _Proxy
 
 
+# Test wall-clock (epoch seconds) served to the contract's TIME_SOURCES, plus a
+# per-source SKEW map (URL substring -> seconds) so tests can model a lying clock.
+_NOW = [1_790_000_000]
+_SKEW = {}
+
+
 class _NondetWeb:
     @staticmethod
     def render(url, mode="text"):
+        skew = next((v for k, v in _SKEW.items() if k in url), 0)
+        now = _NOW[0] + skew
+        if "cdn-cgi/trace" in url:
+            return f"fl=1x2\nh=cloudflare.com\nts={now}.000\nvisit_scheme=https\n"
+        if "blockscout" in url and "main-page/blocks" in url:
+            import datetime as _dt
+            t = _dt.datetime.fromtimestamp(now, _dt.timezone.utc)
+            return json.dumps([{"height": 25550946,
+                                "timestamp": t.strftime("%Y-%m-%dT%H:%M:%S.000000Z")}])
         return f"[deliverable text from {url}]"
 
 
@@ -168,6 +183,8 @@ def contract(module):
     module.gl.message.sender_address = CLIENT
     module.gl.message.value = 0
     module.gl._emit = _FakeEmit()
+    _NOW[0] = 1_790_000_000            # reset the test wall-clock each test
+    _SKEW.clear()                      # …and assume every clock source is honest
     return module.Aegis()
 
 
@@ -202,11 +219,16 @@ def _to_disputed(module, contract, deliver=True):
     return did
 
 
-def _to_ruled(module, contract, outcome="SPLIT", pct=50, resolver=OTHER):
+def _to_ruled(module, contract, outcome="SPLIT", pct=50, resolver=OTHER, past_window=True):
     did = _to_disputed(module, contract)
     _prime(module, outcome, pct)
     _as(module, resolver, 0)
     contract.resolve(did)
+    if past_window:
+        # resolve stamps a real appeal deadline; let it elapse so existing
+        # finalize-path tests still reach finalization (the window is tested
+        # explicitly below with past_window=False).
+        _NOW[0] += module.APPEAL_WINDOW_SECONDS + 1
     return did
 
 
@@ -285,14 +307,15 @@ def test_arbitrator_prompt_carries_guardrails_and_deliverable(module, contract):
 
 # ── resolve records the resolver + history ───────────────────────────────────
 
-def test_resolve_needs_both_cases(module, contract):
+def test_resolve_needs_both_cases_until_response_window_elapses(module, contract):
     did = _mk(module, contract)
     _as(module, CLIENT, 0)
     contract.dispute(did)
     _as(module, CLIENT, 0)
     contract.submit_case(did, "only my side")
     _as(module, OTHER, 0)
-    with pytest.raises(module.gl.vm.UserError, match="both parties"):
+    # while the response window is open, a one-sided ruling is refused
+    with pytest.raises(module.gl.vm.UserError, match="response window still open"):
         contract.resolve(did)
 
 
@@ -439,3 +462,76 @@ def test_stats_shape(module, contract):
     for key in ("total_deals", "total_settled", "total_disputed", "total_appeals",
                 "escrowed_wei", "paid_out_wei", "refunded_wei"):
         assert key in stats
+
+
+# ── v0.4: contract-enforced response + appeal windows (real wall-clock) ──────
+
+def test_response_window_lets_a_genuine_response_preempt(module, contract):
+    # the silent party CAN still be heard: submitting within the window makes
+    # resolve proceed on both cases immediately (no one-sided ruling)
+    did = _mk(module, contract)
+    _as(module, CLIENT, 0); contract.dispute(did)
+    _as(module, CLIENT, 0); contract.submit_case(did, "client's case")
+    _as(module, FREELANCER, 0); contract.submit_case(did, "freelancer's case")  # within window
+    _prime(module, "SPLIT", 50)
+    _as(module, OTHER, 0)
+    assert json.loads(contract.resolve(did))["status"] in ("RULED", "NEEDS_REVIEW")
+
+
+def test_one_sided_ruling_only_after_response_window(module, contract):
+    did = _mk(module, contract)
+    _as(module, CLIENT, 0); contract.dispute(did)
+    d = json.loads(contract.get_deal(did))
+    assert d["respond_by_epoch"] == _NOW[0] + module.RESPONSE_WINDOW_SECONDS
+    _as(module, CLIENT, 0); contract.submit_case(did, "the work was never delivered")
+    _prime(module, "REFUND", 0)
+    _as(module, OTHER, 0)
+    # window still open → refused
+    with pytest.raises(module.gl.vm.UserError, match="response window still open"):
+        contract.resolve(did)
+    # window elapses → the silent freelancer's default is ruled on
+    _NOW[0] += module.RESPONSE_WINDOW_SECONDS + 1
+    _as(module, OTHER, 0)
+    out = json.loads(contract.resolve(did))
+    assert out.get("resolved_one_sided") is True
+    # the panel was told the freelancer defaulted (weighed against them)
+    assert module.NO_CASE in module.gl.eq_principle.last_input
+
+
+def test_appeal_window_blocks_early_finalize(module, contract):
+    did = _to_ruled(module, contract, "RELEASE", 100, past_window=False)
+    d = json.loads(contract.get_deal(did))
+    assert d["appeal_open_until_epoch"] == _NOW[0] + module.APPEAL_WINDOW_SECONDS
+    _as(module, CLIENT, 0)                                 # a non-resolver wallet
+    with pytest.raises(module.gl.vm.UserError, match="appeal window still open"):
+        contract.finalize(did)
+
+
+def test_appeal_window_allows_finalize_after(module, contract):
+    did = _to_ruled(module, contract, "RELEASE", 100, past_window=False)
+    _NOW[0] += module.APPEAL_WINDOW_SECONDS + 1
+    _as(module, CLIENT, 0)
+    assert json.loads(contract.finalize(did))["status"] == "SETTLED"
+
+
+def test_appeal_window_fails_closed_without_clock(module, contract):
+    did = _to_ruled(module, contract, "RELEASE", 100, past_window=False)
+    _NOW[0] += module.APPEAL_WINDOW_SECONDS + 1            # elapsed in truth…
+    _SKEW["blockscout"] = -9999                            # …but the clock can't be trusted
+    _as(module, CLIENT, 0)
+    with pytest.raises(module.gl.vm.UserError, match="no trusted clock"):
+        contract.finalize(did)
+
+
+def test_appealed_deal_finalizes_without_waiting(module, contract):
+    did = _to_ruled(module, contract, "SPLIT", 50, past_window=False)
+    _as(module, CLIENT, BOND); contract.appeal(did)        # the appeal right was used
+    _as(module, OTHER, 0)                                  # no clock advance at all
+    assert json.loads(contract.finalize(did))["status"] == "SETTLED"
+
+
+def test_clock_sources_are_the_proven_pair(module):
+    assert module.TIME_SOURCES == [
+        "https://cloudflare.com/cdn-cgi/trace",
+        "https://eth.blockscout.com/api/v2/main-page/blocks",
+    ]

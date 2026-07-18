@@ -36,6 +36,10 @@ export type Deal = {
   appeal_moved?: boolean;
   cancel_flags?: string[];
   created_seq: number;
+  disputant?: string;             // who raised the dispute
+  respond_by_epoch?: number;      // enforced response window (unix epoch; 0 = clock was down)
+  appeal_open_until_epoch?: number; // enforced appeal window (unix epoch)
+  resolved_one_sided?: boolean;   // ruling made after a party defaulted past the window
 };
 
 export type Reputation = {

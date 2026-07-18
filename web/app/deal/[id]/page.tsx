@@ -16,6 +16,15 @@ function short(a: string) {
   return a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "";
 }
 
+// Human-readable countdown for an enforced on-chain window (seconds of real time remaining).
+function fmtUntil(secs: number): string {
+  const s = Math.max(0, Math.floor(secs));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return r ? `${m}m ${r}s` : `${m}m`;
+}
+
 export default function DealPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
@@ -90,6 +99,14 @@ export default function DealPage() {
   const myCase = isClient ? deal.client_case : isFreelancer ? deal.freelancer_case : "";
   const mySealed = !!myCase;
   const bothCasesIn = !!deal.client_case && !!deal.freelancer_case;
+  // enforced windows — client clock is advisory; the contract re-fetches the real
+  // clock to enforce both, so this only mirrors what the chain will accept
+  const nowSec = Math.floor(Date.now() / 1000);
+  const respondBy = deal.respond_by_epoch ?? 0;
+  const respondPast = respondBy > 0 && nowSec >= respondBy;
+  const appealDeadline = deal.appeal_open_until_epoch ?? 0;
+  const appealPast = appealDeadline > 0 && nowSec >= appealDeadline;
+  const canResolve = bothCasesIn || respondPast;   // one-sided only after the window
   const r = deal.ruling;
   const isResolver = !!deal.resolver && me === deal.resolver.toLowerCase();
   const bondLabel = genFromWei(bond.toString());
@@ -243,13 +260,25 @@ export default function DealPage() {
             </div>
           )}
 
-          {/* disputed: resolve when both in */}
+          {/* disputed: resolve when both in, or one-sided after the response window */}
           {s === "DISPUTED" && (
             <div className="mt-5 pt-4 border-t border-hairline">
-              <button onClick={() => run("resolve", () => resolve(client, id))} disabled={!bothCasesIn || !!busy} className="ink-pill">
-                {busy === "resolve" ? "Arbitrating…" : "Resolve (run the AI arbitrator)"}
+              <button onClick={() => run("resolve", () => resolve(client, id))} disabled={!canResolve || !!busy} className="ink-pill">
+                {busy === "resolve" ? "Arbitrating…" : bothCasesIn ? "Resolve (run the AI arbitrator)" : "Resolve on the filed case"}
               </button>
-              {!bothCasesIn && <p className="mt-2 text-xs text-muted">Both parties must submit a case before resolving.</p>}
+              {bothCasesIn ? null : !respondPast ? (
+                <p className="mt-2 text-xs text-muted">
+                  ⏳ Contract-enforced response window: the other party has
+                  {respondBy > 0 ? ` ${fmtUntil(respondBy - nowSec)} of real time left` : " a real window"} to
+                  file their case. Only after it passes can the arbitrator rule on one side&apos;s case — real
+                  minutes no one can snipe shut. A response filed in time is heard.
+                </p>
+              ) : (
+                <p className="mt-2 text-xs text-muted">
+                  ⏰ Response window passed — the other party did not file a case in time. The arbitrator will rule
+                  on the submitted case, weighing the silent party&apos;s default against them.
+                </p>
+              )}
             </div>
           )}
 
@@ -266,6 +295,13 @@ export default function DealPage() {
                   </button>
                 )}
               </div>
+              {!deal.appealed && appealDeadline > 0 && !appealPast && (
+                <p className="mt-2 text-xs text-muted">
+                  ⏳ Contract-enforced appeal window: finalizing is refused for {fmtUntil(appealDeadline - nowSec)} more of
+                  real time (until the fetched clock clears epoch {appealDeadline}), so the losing side gets a genuine chance
+                  to appeal before the escrow is released — no wallet can snipe it shut.
+                </p>
+              )}
               {isResolver && !deal.appealed && (
                 <p className="mt-2 text-xs text-muted">You triggered this ruling, so the other party must finalize it — that&apos;s the appeal window.</p>
               )}

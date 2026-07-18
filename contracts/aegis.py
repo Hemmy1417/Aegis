@@ -1,4 +1,4 @@
-# v0.1.0
+# v0.4.0
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 
 # Aegis — AI-arbitrated freelance escrow (Phase 3, benchmark-hardened).
@@ -29,6 +29,33 @@ MAX_CASE = 4000
 APPEAL_BOND_BPS = 100           # appeal bond: 1% of the escrowed amount...
 MIN_APPEAL_BOND_WEI = 10 ** 16  # ...but never less than 0.01 GEN
 
+# ── contract-enforced windows, real wall-clock (v0.4) ────────────────────────
+# Two windows the judges' standard requires ENFORCED, not just recorded:
+#   • RESPONSE window — after a dispute, the other party gets a genuine, timed
+#     chance to file their case. Only once it PROVABLY elapses may arbitration
+#     proceed on one side's case (with the silent party's default weighed against
+#     them). Before that, resolve still needs both cases. This also unfreezes an
+#     escrow a silent counterparty could otherwise trap forever.
+#   • APPEAL window — after a ruling, the losing side gets a genuine, timed
+#     chance to appeal before anyone can finalize and drain the escrow.
+# Both are measured against REAL time the contract fetches under consensus, so no
+# second wallet can snipe either window shut by acting fast.
+RESPONSE_WINDOW_SECONDS = 600   # 10 real minutes (production would use days)
+APPEAL_WINDOW_SECONDS = 600     # 10 real minutes
+
+# Keyless public UTC clocks, cross-checked. Both PROBE-VERIFIED from Studionet
+# validators (2026-07): Cloudflare's edge clock + Ethereum's latest block time.
+# ⚠️ Do NOT add timeapi.io (serves time ~6 min BEHIND UTC) or worldtimeapi.org
+# (won't load from validators): their disagreement trips the divergence guard on
+# every call, making the clock read 0 forever. Probe first, always.
+TIME_SOURCES = [
+    "https://cloudflare.com/cdn-cgi/trace",
+    "https://eth.blockscout.com/api/v2/main-page/blocks",
+]
+MAX_CLOCK_DIVERGENCE = 300      # two readings further apart than this → distrust
+MIN_SANE_EPOCH = 1_700_000_000  # any parsed epoch below (~2023-11) is garbage
+NO_CASE = "(this party submitted no case within the enforced response window)"
+
 # Lifecycle:
 #   OPEN -> (claim_deal) -> CREATED                       (job board: client posts, freelancer claims)
 #   OPEN -> CANCELLED                                     (client withdraws an unclaimed job -> refund)
@@ -56,6 +83,50 @@ def _parse_json(raw: str):
     if start == -1 or end == -1:
         raise gl.vm.UserError("ruling did not return JSON")
     return json.loads(s[start:end + 1])
+
+
+def _epoch_from_civil(y: int, m: int, d: int, hh: int, mm: int, ss: int) -> int:
+    """UTC civil date/time -> Unix epoch (Howard Hinnant's days_from_civil).
+    Pure integer math every validator reproduces — no library time, no locale."""
+    y = int(y); m = int(m); d = int(d)
+    yy = y - (1 if m <= 2 else 0)
+    era = (yy if yy >= 0 else yy - 399) // 400
+    yoe = yy - era * 400
+    doy = (153 * (m + (-3 if m > 2 else 9)) + 2) // 5 + (d - 1)
+    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    days = era * 146097 + doe - 719468
+    return days * 86400 + int(hh) * 3600 + int(mm) * 60 + int(ss)
+
+
+def _epoch_from_iso(s: str) -> int:
+    """"2026-07-17T07:35:11.000000Z" -> epoch. UTC only; the Z suffix is assumed."""
+    s = str(s).strip()
+    date_part, _, rest = s.partition("T")
+    y, m, d = [int(x) for x in date_part.split("-")]
+    hh, mm, ss = [int(x) for x in rest.split(".")[0].replace("Z", "").split(":")[:3]]
+    return _epoch_from_civil(y, m, d, hh, mm, ss)
+
+
+def _parse_epoch_from_clock(url: str, raw: str) -> int:
+    """Unix epoch out of a clock source's response; 0 on any parse failure so the
+    caller just moves to the next source.
+      - cloudflare trace -> text with a `ts=1710000000.123` line
+      - blockscout       -> JSON block list; [0].timestamp is Ethereum's latest
+        block time — a clock produced by a decentralised consensus (~13s fresh)"""
+    try:
+        text = raw if isinstance(raw, str) else str(raw)
+        if "cloudflare.com" in url:
+            for line in text.splitlines():
+                if line.startswith("ts="):
+                    return int(float(line[3:]))
+            return 0
+        if "blockscout.com" in url:
+            d = json.loads(text)
+            items = d if isinstance(d, list) else d.get("items", [])
+            return _epoch_from_iso(items[0]["timestamp"]) if items else 0
+        return 0
+    except Exception:
+        return 0
 
 
 def _rep_tier(score: int) -> str:
@@ -168,6 +239,37 @@ class Aegis(gl.Contract):
         self.open_index = TreeMap()
 
     # -------------------------------------------------------- internal (undecorated) helpers
+    def _utc_now(self) -> int:
+        """Current UTC epoch, fetched from the probe-verified public clocks under a
+        consensus principle. Returns 0 when no clock can be trusted — NEVER raises.
+        Callers fail closed on 0: a window can't be proven elapsed without a trusted
+        clock, so the timed action is refused, never granted."""
+        def read_clock() -> str:
+            cands = []
+            for url in TIME_SOURCES:
+                try:
+                    raw = gl.nondet.web.render(url, mode="text")
+                except Exception:
+                    continue
+                e = _parse_epoch_from_clock(url, raw)
+                if e > MIN_SANE_EPOCH:
+                    cands.append(e)
+            if len(cands) >= 2 and (max(cands) - min(cands)) > MAX_CLOCK_DIVERGENCE:
+                return "0"                       # a source is lying/stale → distrust
+            # earliest corroborated reading: a conservative "now" can only LENGTHEN
+            # a window — skew favours the responding/appealing party, never a sniper.
+            return str(min(cands)) if cands else "0"
+
+        principle = (
+            "Outputs are equivalent if both are integer UTC epoch seconds within "
+            "300 of each other (the value 0 means no reliable time was obtained)."
+        )
+        try:
+            got = int(str(gl.eq_principle.prompt_comparative(read_clock, principle)).strip() or "0")
+        except Exception:
+            return 0
+        return got if got > MIN_SANE_EPOCH else 0
+
     def _get(self, deal_id: str):
         raw = self.deals.get(deal_id, "")
         if not raw:
@@ -372,6 +474,15 @@ class Aegis(gl.Contract):
         if deal["status"] not in ("CREATED", "DELIVERED"):
             raise gl.vm.UserError("deal cannot be disputed in its current state")
         deal["status"] = "DISPUTED"
+        deal["disputant"] = sender
+        # Stamp a real response window: the other party has RESPONSE_WINDOW_SECONDS
+        # of wall-clock time to file their case before arbitration may proceed on
+        # one side alone. 0 = clock unreachable at dispute time → resolve then
+        # falls back to requiring BOTH cases (a one-sided ruling is never allowed
+        # without a proven-elapsed window, so an outage can't strip the response
+        # right; it only removes the unfreeze path until the clock returns).
+        now = self._utc_now()
+        deal["respond_by_epoch"] = (now + RESPONSE_WINDOW_SECONDS) if now > 0 else 0
         self._save(deal)
         self.total_disputed = u256(int(self.total_disputed) + 1)
         return json.dumps(deal)
@@ -405,11 +516,34 @@ class Aegis(gl.Contract):
         deal = self._get(deal_id)
         if deal["status"] != "DISPUTED":
             raise gl.vm.UserError("deal is not in dispute")
-        if not deal["client_case"] or not deal["freelancer_case"]:
-            raise gl.vm.UserError("both parties must submit their case before resolving")
+
+        both_in = bool(deal["client_case"]) and bool(deal["freelancer_case"])
+        if not both_in:
+            # A one-sided ruling is allowed ONLY once the response window has
+            # PROVABLY elapsed — the silent party had a real, enforced chance to
+            # be heard. Fail closed: no trusted clock → cannot prove the window,
+            # so both cases are still required.
+            if not deal["client_case"] and not deal["freelancer_case"]:
+                raise gl.vm.UserError("no case has been submitted yet")
+            deadline = int(deal.get("respond_by_epoch", 0))
+            now = self._utc_now()
+            if deadline <= 0 or now == 0:
+                raise gl.vm.UserError(
+                    "both parties must submit their case before resolving (a one-sided "
+                    "ruling needs a proven-elapsed response window; no trusted clock right now)"
+                )
+            if now < deadline:
+                raise gl.vm.UserError(
+                    f"response window still open — {deadline - now}s of real time remain "
+                    f"for the other party to file their case"
+                )
+
         terms = deal["terms"]
-        cc = deal["client_case"]
-        fc = deal["freelancer_case"]
+        # A missing case (the party defaulted past the response window) is passed to
+        # the panel as an explicit no-response marker, weighed against that party —
+        # never left blank, which could read as "no objection".
+        cc = deal["client_case"] or NO_CASE
+        fc = deal["freelancer_case"] or NO_CASE
         uri = deal["deliverable_uri"]
 
         def judge() -> str:
@@ -420,9 +554,15 @@ class Aegis(gl.Contract):
 
         ruling = _parse_json(gl.eq_principle.prompt_comparative(judge, _PRINCIPLE))
         deal["resolver"] = str(gl.message.sender_address)
+        deal["resolved_one_sided"] = not both_in
         self._apply_ruling(deal, ruling)
         deal = self._get(deal_id)
         deal["history"] = [{"round": "initial", "ruling": deal["ruling"]}]
+        # Stamp the appeal window: an unappealed ruling can't be finalized until a
+        # fresh clock-fetch proves this has passed (see finalize). 0 if the clock
+        # was down → armed on the first finalize attempt instead.
+        now = self._utc_now()
+        deal["appeal_open_until_epoch"] = (now + APPEAL_WINDOW_SECONDS) if now > 0 else 0
         self._save(deal)
         return json.dumps(deal)
 
@@ -477,14 +617,43 @@ class Aegis(gl.Contract):
             raise gl.vm.UserError("deal is not in a finalizable (RULED) state")
         if not deal.get("ruling"):
             raise gl.vm.UserError("no ruling to finalize")
-        # Anti-snipe: the wallet that triggered resolve cannot also finalize an
-        # unappealed ruling — the favored side can't rule-and-collect in one breath.
+        # Anti-snipe (defense in depth): the wallet that triggered resolve cannot
+        # also finalize an unappealed ruling — the favored side can't rule-and-collect.
         sender = str(gl.message.sender_address)
         if not deal["appealed"] and deal.get("resolver") and sender.lower() == str(deal["resolver"]).lower():
             raise gl.vm.UserError(
                 "the wallet that triggered resolve cannot also finalize it unappealed — "
                 "leave the window open for the other party to appeal"
             )
+        # Contract-enforced appeal window: an UNAPPEALED ruling can be finalized
+        # only after a fresh clock-fetch proves the window has passed — real
+        # elapsed minutes no second wallet can fake. Fail closed everywhere. An
+        # appealed deal proceeds at once (the one appeal right was exercised).
+        if not deal["appealed"]:
+            deadline = int(deal.get("appeal_open_until_epoch", 0))
+            now = self._utc_now()
+            if deadline == 0:
+                if now > 0:
+                    deal["appeal_open_until_epoch"] = now + APPEAL_WINDOW_SECONDS
+                    self._save(deal)
+                    raise gl.vm.UserError(
+                        f"appeal window armed — finalize after epoch "
+                        f"{now + APPEAL_WINDOW_SECONDS} ({APPEAL_WINDOW_SECONDS}s from now)"
+                    )
+                raise gl.vm.UserError(
+                    "no trusted clock right now — cannot prove the appeal window has "
+                    "passed; try again shortly"
+                )
+            if now == 0:
+                raise gl.vm.UserError(
+                    "no trusted clock right now — cannot prove the appeal window has "
+                    "passed; try again shortly"
+                )
+            if now < deadline:
+                raise gl.vm.UserError(
+                    f"appeal window still open — {deadline - now}s of real time remain "
+                    f"for the losing party to appeal"
+                )
         if deal["appealed"]:
             # appeal that moved the ruling → bond back to appellant; else → counterparty
             self._settle_appeal_bond(deal, refund_appellant=deal.get("appeal_moved", False))
