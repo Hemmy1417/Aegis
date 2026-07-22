@@ -75,7 +75,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   Escrow + AI arbitration, settled on-chain by a GenLayer validator panel.
                 </p>
               </div>
-              <p className="eyebrow">Sealed on GenLayer · {NETWORK_LABEL}</p>
+              <p className="eyebrow">Settled on GenLayer · {NETWORK_LABEL}</p>
             </div>
           </footer>
         </WalletProvider>

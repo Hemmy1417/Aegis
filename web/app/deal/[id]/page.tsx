@@ -239,21 +239,21 @@ export default function DealPage() {
             </button>
           )}
 
-          {/* disputed: submit case (sealed — one shot) */}
+          {/* disputed: submit case (locked — one shot) */}
           {s === "DISPUTED" && (
             <div className="mt-4">
               {mySealed ? (
                 <>
-                  <label className="eyebrow">Your case · sealed</label>
+                  <label className="eyebrow">Your case · locked</label>
                   <p className="mt-2 text-[0.95rem] text-body whitespace-pre-wrap border-l border-hairline pl-3">{myCase}</p>
-                  <p className="mt-2 text-xs text-muted">Submitted and locked — statements are sealed so neither side can rewrite after reading the other&apos;s.</p>
+                  <p className="mt-2 text-xs text-muted">Submitted and locked — immutable once filed. Statements are recorded in plain text on-chain (not private); the enforced response window bounds the exchange.</p>
                 </>
               ) : (
                 <>
-                  <label className="eyebrow">Your case · one submission, then sealed</label>
+                  <label className="eyebrow">Your case · one submission, then locked</label>
                   <textarea value={statement} onChange={(e) => setStatement(e.target.value)} rows={4} placeholder="Explain your side, referencing the agreed terms. You cannot edit this once submitted." className="field mt-2 resize-y" />
                   <button onClick={() => run("case", () => submitCase(client, id, statement))} disabled={!statement.trim() || !!busy} className="ink-pill mt-3">
-                    {busy === "case" ? "Sealing…" : "Submit & seal my case"}
+                    {busy === "case" ? "Submitting…" : "Submit & lock my case"}
                   </button>
                 </>
               )}

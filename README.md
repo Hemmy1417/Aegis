@@ -7,8 +7,8 @@
 **Trustless freelance payments, judged by AI-validator consensus on GenLayer.**
 
 A client locks payment for a job in escrow. If the work is disputed, an AI-validator panel reads the
-agreed terms and both parties' sealed cases, fetches the deliverable, and rules how the money splits -
-the contract settles the escrow by that ruling, on-chain, with no platform in the middle.
+agreed terms and both parties' committed cases, fetches the deliverable, and rules how the money
+splits - the contract settles the escrow by that ruling, on-chain, with no platform in the middle.
 
 Live app: **https://aegis-safu.vercel.app**
 
@@ -17,8 +17,10 @@ Live app: **https://aegis-safu.vercel.app**
 - **Money moves on the AI's verdict** - release, refund, or split, paid out by the contract itself.
 - **Enforced windows, real wall-clock** - the response and appeal windows are measured against UTC
   the contract fetches under validator consensus; no wallet can snipe them shut.
-- **Sealed cases** - each party's statement is immutable once submitted, so nobody reads the
-  opponent's brief and rewrites theirs.
+- **Committed cases** - each party's statement is immutable once submitted: you cannot rewrite your
+  own brief after filing. Statements are recorded in plain text on-chain (GenLayer validators must
+  read every input to reach consensus, so a case cannot be cryptographically sealed from the other
+  party). The enforced response window, not secrecy, is what bounds the exchange.
 - **Bonded appeals** - one re-arbitration per deal, costing 1% of the escrow; frivolous appeals pay
   the counterparty for the delay.
 - **A real marketplace** - clients post open jobs with the escrow already locked; freelancers browse
@@ -30,14 +32,14 @@ Live app: **https://aegis-safu.vercel.app**
 1. Post a job with plain-English terms - the escrow funds on creation, open to the board or assigned.
 2. Review the delivered work.
 3. Approve to release payment instantly, or dispute.
-4. In a dispute, submit your sealed case; the arbitrator rules and the contract settles.
+4. In a dispute, submit your case (immutable once filed); the arbitrator rules and the contract settles.
 5. Build an on-chain reputation from fairly-settled deals.
 
 ### For freelancers
 1. Browse open jobs - the money is already escrowed before you start.
 2. Claim a job and deliver the work (optionally a URL the arbitrator can fetch).
 3. Get paid on approval, or dispute if the client won't settle.
-4. In a dispute, submit your sealed case within the enforced response window.
+4. In a dispute, submit your case within the enforced response window (immutable once filed).
 5. The losing side may appeal once (bonded) before funds move.
 
 ## Rulings
@@ -51,14 +53,28 @@ The arbitration panel returns a structured ruling; the contract settles determin
 | `SPLIT` | Both sides have partial merit - the escrow splits by `freelancer_pct`. |
 | `UNCLEAR` | The evidence cannot support a ruling - funds are **held**, never guessed into a payout. |
 
-A ruling below the confidence floor parks the deal in `NEEDS_REVIEW` instead of paying out; the
-parties can appeal or mutually cancel (full refund, bond returned).
+A ruling the lead validator marks low-confidence parks the deal in `NEEDS_REVIEW` instead of paying
+out; the parties can appeal or mutually cancel (full refund, bond returned).
+
+**On the confidence field (honest scope).** Validators reach equivalence on the money-decisive
+fields only - the `outcome` and the `freelancer_pct` bucket (see the consensus principle). The
+`confidence` value is *not* part of that equivalence rule; it is the lead validator's advisory
+reading. It is wired to a single, deliberately safe effect: a `LOW` confidence can only route a deal
+to `NEEDS_REVIEW`, a hold that pays nobody and is fully recoverable by appeal or mutual cancel. So an
+un-agreed confidence can never move money adversely - it can only make the contract more cautious.
+It is state-changing but hold-only, which is why it sits outside consensus by design rather than
+by omission.
 
 ## Enforced windows (real wall-clock)
 
 GenVM has no native clock, so the contract fetches UTC under validator consensus from two
-probe-verified sources - Cloudflare's edge clock and Ethereum's latest block timestamp - and takes
-the earliest corroborated reading, so skew can only lengthen a window, never shorten one.
+probe-verified sources - Cloudflare's edge clock and Ethereum's latest block timestamp. When **both**
+are reachable it cross-checks them and distrusts the reading (returns 0) if they diverge by more than
+300 s; when only **one** is reachable it proceeds on that single reading; when **neither** is
+reachable it returns 0 and the window fails closed. It always takes the earliest available reading,
+so skew can only lengthen a window, never shorten one. Corroboration is therefore best-effort
+two-source, not a hard requirement - a single live source is enough to stamp a window, and no live
+source blocks the adverse action entirely.
 
 | Window | Stamped by | Enforced by | Effect |
 |---|---|---|---|
@@ -85,7 +101,7 @@ OPEN -> CREATED -> DELIVERED -> SETTLED                      (client approves)
 | `OPEN` | Job posted to the board, escrow locked, no freelancer yet. |
 | `CREATED` | Freelancer assigned or job claimed - work in progress. |
 | `DELIVERED` | Work submitted, awaiting the client's review. |
-| `DISPUTED` | Either party disputed; the response window is running; cases are sealed on submission. |
+| `DISPUTED` | Either party disputed; the response window is running; a filed case is locked (immutable). |
 | `RULED` | The panel proposed a ruling; the appeal window is running; no payout yet. |
 | `NEEDS_REVIEW` | The ruling was `UNCLEAR` or low-confidence - funds held; appeal or cancel. |
 | `SETTLED` | Escrow paid out per approval or ruling; the deal's book closes to zero. |
@@ -95,9 +111,9 @@ OPEN -> CREATED -> DELIVERED -> SETTLED                      (client approves)
 
 | Function | Kind | What runs under consensus |
 |---|---|---|
-| `resolve` | write | The panel reads terms + both sealed cases (a defaulted party is passed as an explicit no-response marker), fetches the deliverable URL, and agrees on a ruling via `gl.eq_principle.prompt_comparative`. |
+| `resolve` | write | The panel reads terms + both committed cases (a defaulted party is passed as an explicit no-response marker), fetches the deliverable URL, and agrees on a ruling via `gl.eq_principle.prompt_comparative`. Equivalence is keyed on `outcome` + the nearest-10% `freelancer_pct` bucket - the money-decisive fields; `confidence` is advisory and not part of the rule (see Rulings). |
 | `appeal` | write, payable | An independent, more rigorous re-arbitration of the same evidence; equivalence keyed on outcome + nearest-10% bucket. |
-| `_utc_now` | internal | Both clock sources fetched and cross-checked (divergence > 300 s distrusts the reading); validators agree the epoch within tolerance. |
+| `_utc_now` | internal | Up to two clock sources fetched; when both return, cross-checked (divergence > 300 s distrusts the reading); a single live source is trusted, no live source returns 0. Validators agree the epoch within tolerance. |
 
 Everything else - settlement math, window guards, bond accounting, reputation - is deterministic
 contract code that runs identically on every validator.
@@ -122,7 +138,7 @@ contract code that runs identically on every validator.
 | `submit_deliverable(deal_id, uri)` | freelancer | - | Optional URL the arbitrator fetches at ruling time. |
 | `approve(deal_id)` | client | - | Releases the escrow to the freelancer - the happy path. |
 | `dispute(deal_id)` | either party | - | Stamps the enforced response window. |
-| `submit_case(deal_id, statement)` | each party, once | - | Sealed immediately - immutable after submission. |
+| `submit_case(deal_id, statement)` | each party, once | - | Locked on submission - immutable after filing; recorded in plain text on-chain. |
 | `resolve(deal_id)` | anyone | - | Runs the panel. One-sided only after the response window provably elapses. |
 | `appeal(deal_id)` | losing party | bond | 1% of escrow (min 0.01 GEN), once per deal. |
 | `finalize(deal_id)` | not the resolver | - | Enforces the appeal window, settles the bond, pays out per the ruling. |
@@ -136,8 +152,9 @@ contract code that runs identically on every validator.
 ### Consensus guarantees
 
 - **The ruling is the panel's, not a server's** - `resolve` and `appeal` run inside
-  `gl.eq_principle.prompt_comparative`; validators must agree on outcome + bucketed percentage
-  before anything is stored.
+  `gl.eq_principle.prompt_comparative`; validators must agree on the money-decisive fields (outcome +
+  bucketed percentage) before anything is stored. The advisory `confidence` field is not in that rule
+  and can only trigger a conservative hold, never a payout.
 - **Injection-guarded** - party statements and the fetched deliverable are labelled material under
   review, never instructions; an unfetchable deliverable is evidence *against* the delivery claim.
 - **Solvency book** - `escrowed / paid out / refunded` accounting in `get_stats`; a settled or
@@ -207,7 +224,9 @@ cd web && npm test
 
 ## Security
 
-- Case statements are sealed on submission; the last-mover advantage does not exist.
+- Case statements are immutable once submitted - you cannot rewrite your own brief after filing.
+  They are recorded in plain text on-chain (not sealed from the counterparty); the enforced response
+  window, not secrecy, is what bounds the exchange.
 - The response and appeal windows are enforced against consensus-fetched UTC and fail closed - an
   outage can only lengthen a window, never shorten or skip one.
 - Fetched text (cases, deliverable) is material under review, never instructions to the arbitrator.
@@ -218,9 +237,15 @@ cd web && npm test
 
 ## Design notes
 
-- The clock is as trustless as its two independent sources; both would have to lie in the same
-  direction at the same moment to shift a deadline. The contract takes the earliest corroborated
-  reading, so real skew favours the responding party.
+- **On sealing (honest limitation).** True cryptographic sealing of a case is impractical on
+  GenLayer today: consensus requires every validator to read the same inputs, so a statement the
+  panel judges cannot also be hidden from the panel (or, on a public chain, from the counterparty).
+  Aegis therefore does not claim secrecy - it guarantees immutability (no rewriting after filing) and
+  bounds the exchange with the enforced response window instead.
+- The clock is as trustless as whichever of its two independent sources are live. When both respond
+  they would both have to lie in the same direction to shift a deadline; when only one responds the
+  contract trusts it; when neither responds the window fails closed. It always takes the earliest
+  available reading, so real skew favours the responding party.
 - Deliverable quality judgement depends on the page being anonymously fetchable; unclear evidence
   rules `UNCLEAR` and holds funds rather than guessing.
 - `genlayer write` has no value flag, so payable flows (escrow, bonds) are exercised through the

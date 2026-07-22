@@ -130,7 +130,12 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const connect = useCallback(
     async (w?: Discovered) => {
       const pick = w ?? wallets[0];
-      if (!pick) throw new Error("No wallet detected. Install MetaMask or Rabby, then try again.");
+      if (!pick) {
+        throw new Error(
+          "No wallet detected. If you have one installed, another extension may be blocking it " +
+          "(console: \"Cannot set property ethereum\") — remove the conflicting wallet and hard-reload (Ctrl+Shift+R).",
+        );
+      }
       setConnecting(true);
       try {
         const accs: string[] = await pick.provider.request({ method: "eth_requestAccounts" });
