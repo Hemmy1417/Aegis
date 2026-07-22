@@ -97,7 +97,7 @@ export default function DealPage() {
 
   const s = deal.status;
   const myCase = isClient ? deal.client_case : isFreelancer ? deal.freelancer_case : "";
-  const mySealed = !!myCase;
+  const caseFiled = !!myCase;
   const bothCasesIn = !!deal.client_case && !!deal.freelancer_case;
   // enforced windows — client clock is advisory; the contract re-fetches the real
   // clock to enforce both, so this only mirrors what the chain will accept
@@ -242,7 +242,7 @@ export default function DealPage() {
           {/* disputed: submit case (locked — one shot) */}
           {s === "DISPUTED" && (
             <div className="mt-4">
-              {mySealed ? (
+              {caseFiled ? (
                 <>
                   <label className="eyebrow">Your case · locked</label>
                   <p className="mt-2 text-[0.95rem] text-body whitespace-pre-wrap border-l border-hairline pl-3">{myCase}</p>
